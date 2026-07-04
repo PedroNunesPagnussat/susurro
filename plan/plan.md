@@ -1,0 +1,71 @@
+# susurro — Plan
+
+Local, fully-offline voice dictation for Linux/Wayland/Hyprland, in the spirit of Wispr Flow. Name = "whisper" (es).
+
+## Background
+
+Greenfield project at `/home/pedro/dev/susurro` (sibling to other projects under `~/dev`; not yet a git repo). Target machine, verified via probes:
+
+- **OS/session:** Arch Linux, Wayland, Hyprland compositor. Shell zsh. Currently operating **inside tmux** (`TERM=tmux-256color`) — this rules out reliable terminal key-release detection (kitty keyboard protocol is mangled by tmux).
+- **GPU:** NVIDIA GTX 1060 6GB (Pascal). Weak FP16 throughput but has DP4A, so **int8 is the right quantization**. `nvidia-smi` present.
+- **Audio:** PipeWire (`pw-record`, `pactl` present). Capture will go through PortAudio → ALSA → PipeWire (`pipewire-alsa` compat).
+- **Toolchain:** Python 3.13.7, Rust/cargo 1.95 available. `uv` will manage the Python env.
+- **Permissions:** user is **not** in the `input` group; `/dev/input/event*` is `root:input`. Only matters for Phase 2 (global hotkey via evdev).
+
+Design was settled through an extensive grill session (see Decisions). This plan implements **Phase 1 only** (the smoke harness); Phases 2–3 are scoped at a high level for continuity.
+
+## Problem Statement
+
+I want to dictate by voice on my Linux/Wayland machine and get clean text, fully locally (no cloud, no data leaving the box). Before building the real system-wide dictation app, I need to prove the core pipeline — mic → local Whisper on GPU → text — actually works on this specific old GPU, and feels fast enough to build a warm-model architecture around.
+
+## Solution
+
+A phased build:
+
+- **Phase 1 (this plan): smoke harness.** A Python loop that records fixed ~3s audio windows from the mic, transcribes them locally on the GPU with faster-whisper, applies tiny rule-based cleanup, and prints the result — printing nothing on silence. Its only job is to *prove the pipeline works and is fast*, and to establish a clean `Engine`/UI boundary the later phases reuse.
+- **Phase 2 (future): the real app.** Global-hotkey push-to-talk (hold=record, release=transcribe) driven by Hyprland, a daemon/client split over a Unix socket, injection into the focused Wayland window, and a pluggable local-LLM cleanup stage.
+- **Phase 3 (future, optional): cloud** transcription/cleanup backend behind the same formatter/engine seams.
+
+## Decisions
+
+- **Interaction model = push-to-talk (hold), batch.** Record while trigger held, transcribe on release. No streaming, ever (explicitly dropped as a requirement). Explicit trigger avoids false activations and keeps the state machine trivial. Ruled out: toggle (leave-it-recording risk + needs an always-on-top Wayland indicator), VAD/always-listening (constant compute, wake-word problem).
+- **Phase 1 trigger is NOT real push-to-talk.** Terminals (esp. under tmux) don't report key-release, so the harness uses **fixed ~3s capture windows** purely as a validation loop. Real hold-to-talk is deferred to Phase 2 where the trigger comes from the **compositor** (Hyprland `bind`), not the terminal. Accepted caveat: fixed windows chop words at boundaries — fine for a smoke test, not to be judged for accuracy.
+- **Transcription engine = faster-whisper (CTranslate2).** Fastest practical accuracy/watt, built-in Silero VAD, mature. Ruled out: whisper.cpp (Pascal FP16 path slower, CUDA setup fussier — reconsider only if we go Rust), cloud (violates the local requirement).
+- **Model = `large-v3-turbo`, `compute_type="int8"`, `device="cuda"`.** ~1.5–2GB VRAM, near-large accuracy, fast decode; int8 leans on Pascal's DP4A. `distil-large-v3.5` (English-only, faster) is a drop-in swap later if more speed is wanted — no lock-in.
+- **English-only.** `language="en"` hard-set to skip detection time and misdetection.
+- **Transcription defaults (consciously accepted):** `vad_filter=True` (drops non-speech → prevents Whisper's silence-hallucination, critical for a loop that captures lots of silence), `condition_on_previous_text=False` (independent utterances → no repetition/context bleed), `beam_size=5` (fine on turbo for short clips; drop to 1 only if latency bites).
+- **Cleanup = pluggable formatter stage, rule-based in Phase 1.** Interface exists from day 1; Phase 1's only impl trims/collapses whitespace and drops empty/`no_speech` results. **No filler-word removal** (regex eats real words; "the sum" ≠ filler). Local LLM cleanup (~3B Q4, fits alongside turbo in 6GB) is a Phase 2 formatter impl. Ruled out: LLM in Phase 1 (VRAM contention + edit-fidelity risk before the core loop is proven).
+- **Language/stack = Python, single long-lived process.** faster-whisper is Python anyway. Code split into a UI-agnostic `Engine` core (capture → VAD → transcribe → format → emit text) + thin UI/driver. Ruled out for now: daemon+client+IPC (YAGNI until Phase 2's external trigger forces it — the `Engine` extracts behind a Unix socket mechanically then), Rust/hybrid (hold-to-talk latency is dominated by inference, not client language).
+- **Audio = `sounddevice` (PortAudio), in-process, 16kHz mono float32, callback-based.** Numpy arrays feed faster-whisper directly with no resampling; the callback/start-stop model is reused verbatim in Phase 2. Ruled out: `pw-record` subprocess (clumsy start/stop lifecycle, would be rewritten for P2), `soundcard` (less battle-tested).
+- **Env = `uv`; CUDA/cuDNN via pinned `nvidia-*-cu12` pip wheels inside the venv.** The venv owns its CUDA stack (`nvidia-cublas-cu12`, `nvidia-cudnn-cu12`), isolated from Arch's fast-moving system CUDA so `pacman -Syu` can't silently break CTranslate2's ABI. Gives a lockfile. Ruled out: Arch system CUDA (ABI churn), plain venv/pip (no lockfile, slower).
+- **GPU spike is build-step zero.** Prove the 1060 can load+run turbo int8 on CUDA before architecting around a warm-in-VRAM model. Documented fallback if cuDNN fights: `device="cpu", compute_type="int8"` (slower but tolerable for short clips), debug GPU separately.
+
+## Testing Decisions
+
+This is a smoke harness, so the real acceptance is behavioural/manual (speak → observe), but the `Engine`/UI split creates clean seams:
+
+- **Formatter (pure function):** unit-test directly — whitespace trim/collapse, empty/`no_speech` → dropped. No I/O, fast, deterministic. Highest-value automated test.
+- **Engine transcribe seam:** a test that runs `Engine.transcribe(fixture_wav) -> text` against a short committed WAV of known speech and asserts the expected words appear. Marked to **skip when no CUDA/model available** (so it doesn't block CI/other machines); primarily a local confidence check.
+- **Manual DoD check:** the Phase-1 acceptance criteria below, exercised live with the mic.
+- Prior art: none (greenfield) — establish the convention: pure logic unit-tested, model/audio behind seams that can be faked or skipped.
+
+**Phase 1 Definition of Done:** the loop prints accurate transcripts of my speech, prints nothing (or a quiet marker) on silence, and each transcription lands in **under ~1.5s wall time on GPU** once the model is warm. The latency clause is the proof the warm-model premise holds before Phase 2 is built on it.
+
+## Steps
+
+- [ ] **Step 0 — GPU spike.** Done when a ~15-line script loads `large-v3-turbo` int8 on `device="cuda"`, transcribes a short WAV, and prints correct text + per-clip timing + observed VRAM; and we've confirmed either GPU works or recorded the CPU fallback path. See `plan/step-gpu-spike.md` if it needs debugging sub-steps.
+- [ ] **Step 1 — Project scaffold.** Done when `uv init` layout exists with `pyproject.toml` pinning `faster-whisper`, `sounddevice`, `numpy`, `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`; `uv sync` succeeds; a `susurro/` package + `README` skeleton are in place.
+- [ ] **Step 2 — Audio capture module.** Done when a `sounddevice`-based capture records a fixed-duration 16kHz mono float32 window into a numpy array via callback, with device-selection + basic error handling, unit-exercisable without hardware where possible.
+- [ ] **Step 3 — Engine + formatter.** Done when a UI-agnostic `Engine` exposes `transcribe(audio) -> text` using the agreed defaults (`vad_filter`, `condition_on_previous_text=False`, `language="en"`, int8/cuda) and applies the rule-based formatter; formatter has passing unit tests; model is loaded once and reused (warm).
+- [ ] **Step 4 — Smoke-harness loop.** Done when running the entrypoint loops capture→transcribe→format→print, prints nothing/a quiet marker on silence, and handles Ctrl-C cleanly.
+- [ ] **Step 5 — Verify DoD.** Done when the live run meets the Phase-1 DoD (accurate transcripts, quiet on silence, <~1.5s/result warm on GPU), timing is logged, and results are recorded in `plan/log.md`.
+
+## Out of scope
+
+- **Phase 2** (future): real hold-to-talk via Hyprland global hotkey, evdev/`input`-group setup, daemon+client over Unix socket, Wayland text injection into focused window, local-LLM cleanup formatter.
+- **Phase 3** (future, optional): cloud transcription/cleanup backend.
+- **Streaming / partial results** — explicitly dropped, not a requirement in any phase.
+- **Filler-word removal in Phase 1** — deferred to the Phase 2 LLM stage.
+- **Multilingual support** — English-only by decision.
+- **Toggle / always-listening trigger models.**
+- **Vocabulary biasing** (`initial_prompt` with technical terms) — parked until a real term list exists.
