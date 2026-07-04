@@ -211,3 +211,38 @@ callable (tests still inject a spy, so the seam is unchanged).
   loop (the last anti-wedge gap). Keep `T` generous (pathological-hang backstop, not a latency knob;
   a too-tight timeout SIGKILLs mid-type -> half-typed text). Would add 2 tests
   (`FileNotFoundError`/`TimeoutExpired` side_effects). Recommended for Step 11 live-hardening.
+
+**Recording notifications + auto-stop bump (ad-hoc, during Step 11 live):** DONE.
+
+- **Why:** user asked for a toast on record start + stop. Doubles as the "armed" indicator
+  hold-to-talk lacked (one of the reasons toggle was declined) — a persistent visual cue that the mic
+  is live.
+- **New `susurro.notify` seam** (same DI shape as `inject`): `Notifier` posts a persistent
+  `🎙 Recording…` toast (`notify-send -t 0`) on start, replaced on stop by a fading `✓ Done` toast
+  whose body is the transcript (empty -> `(no speech)`). mako collapses the two via the
+  `x-canonical-private-synchronous:susurro` hint, so they share one slot instead of stacking.
+  `NullNotifier` for opt-out.
+- **Never-raise, never-wedge:** `_send` swallows `OSError`/`SubprocessError` onto stderr and uses a
+  generous `timeout=5.0`, so a missing/hung `notify-send` can't crash or block the single-threaded
+  accept loop (the same contract wanted for `inject`).
+- **Daemon wiring:** new `notify` DI param (defaults to `NullNotifier`, so existing tests/back-compat
+  are unaffected); `start()` calls `recording()`, `stop()` calls `done(text)` in a **try/finally** so
+  the persistent `-t 0` toast is ALWAYS cleared — even if transcribe/inject raises — else it would
+  hang on screen forever. `--no-notify` CLI flag; `main()` wires `Notifier()` unless disabled. User
+  chose persistent-style + show-transcript when asked.
+- **Auto-stop bumped 30s -> 60s** (`DEFAULT_MAX_RECORD_S`): user pauses to think mid-dictation and 30s
+  cut holds short. A stuck recording still self-heals in 60s; memory stays bounded (buffer hard-capped,
+  ~62 KB/s). Tests pass explicit `max_record_s`, so they're unaffected.
+- **Rejected: polling key-state to detect a missed release.** Wayland has no supported "is this key
+  down" query; only evdev (`/dev/input/event*`, `root:input`) exposes it and the user is NOT in the
+  `input` group — the whole Phase-2 design avoids evdev by making the compositor the trigger. A
+  compositor-level poll fails in exactly the grab scenarios that drop the release, so it's no more
+  robust than the timeout it would replace. A push-based `binde` key-repeat heartbeat was noted as the
+  "correct" alternative but not built (~25 client spawns/s while held — the spawn cost the Step-6 spike
+  already flagged). Fixed timeout kept, just widened.
+- **Tests:** +11 (52 total). `test_notify.py` (6) patches `susurro.notify.subprocess.run`: command
+  shape + sync hint, `-t 0` persistent vs finite fade, empty-transcript `(no speech)` fallback,
+  `FileNotFoundError`/`TimeoutExpired` swallowed, `NullNotifier` silent. `test_daemon.py` (+5) via a
+  `SpyNotifier`: start raises the toast, stop clears it with the transcript, no-op stop is silent,
+  auto-stop clears it, and the toast is cleared even when the engine raises. Live-verified against the
+  running mako. ruff clean.

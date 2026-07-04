@@ -56,6 +56,20 @@ class FakeClock:
         self.t += dt
 
 
+class SpyNotifier:
+    """Stand-in for `notify.Notifier`: records the (state, text) sequence so tests
+    can assert the recording toast is raised on start and always cleared on stop."""
+
+    def __init__(self):
+        self.events = []  # ("recording",) / ("done", text)
+
+    def recording(self):
+        self.events.append(("recording",))
+
+    def done(self, text):
+        self.events.append(("done", text))
+
+
 def _make(recorder=None, engine=None, max_record_s=30.0, clock=None):
     recorder = recorder or FakeRecorder()
     engine = engine or FakeEngine()
@@ -64,6 +78,7 @@ def _make(recorder=None, engine=None, max_record_s=30.0, clock=None):
         recorder,
         engine,
         injected.append,
+        notify=SpyNotifier(),
         max_record_s=max_record_s,
         clock=clock or FakeClock(),
         log=lambda _msg: None,  # silence logging in tests
@@ -187,3 +202,46 @@ def test_remaining_counts_down_and_is_none_when_idle():
     assert daemon.remaining() == pytest.approx(20.0)
     clock.advance(100.0)  # past the deadline -> clamped, never negative
     assert daemon.remaining() == 0.0
+
+
+# --- notifications ---------------------------------------------------------
+
+def test_start_raises_recording_toast():
+    daemon, _recorder, _engine, _injected = _make()
+    daemon.start()
+    assert daemon._notify.events == [("recording",)]
+
+
+def test_stop_clears_toast_with_transcript():
+    daemon, _recorder, _engine, _injected = _make()
+    daemon.start()
+    daemon.stop()
+    assert daemon._notify.events == [("recording",), ("done", "hello world")]
+
+
+def test_stop_without_start_does_not_notify():
+    daemon, _recorder, _engine, _injected = _make()
+    daemon.stop()  # no-op stop must not post a stray toast
+    assert daemon._notify.events == []
+
+
+def test_auto_stop_clears_toast():
+    clock = FakeClock()
+    daemon, _recorder, _engine, _injected = _make(max_record_s=30.0, clock=clock)
+    daemon.start()
+    clock.advance(30.0)
+    daemon.check_timeout()
+    assert daemon._notify.events == [("recording",), ("done", "hello world")]
+
+
+def test_toast_is_cleared_even_if_engine_raises():
+    class BoomEngine:
+        def transcribe(self, audio):
+            raise RuntimeError("boom")
+
+    daemon, _recorder, _engine, _injected = _make(engine=BoomEngine())
+    daemon.start()
+    with pytest.raises(RuntimeError, match="boom"):
+        daemon.stop()
+    # the persistent -t 0 toast must still be replaced on failure, else it hangs
+    assert daemon._notify.events == [("recording",), ("done", "")]

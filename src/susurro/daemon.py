@@ -31,8 +31,9 @@ from ._ipc import socket_path
 from .audio import SAMPLE_RATE, Recorder
 from .engine import DEFAULT_MODEL, Engine
 from .inject import inject
+from .notify import Notifier, NullNotifier
 
-DEFAULT_MAX_RECORD_S = 30.0
+DEFAULT_MAX_RECORD_S = 60.0
 
 
 class _Capturer(Protocol):
@@ -46,6 +47,13 @@ class _Transcriber(Protocol):
     """Structural type for the engine seam (real: `engine.Engine`)."""
 
     def transcribe(self, audio: np.ndarray) -> str: ...
+
+
+class _Notifier(Protocol):
+    """Structural type for the notification seam (real: `notify.Notifier`)."""
+
+    def recording(self) -> None: ...
+    def done(self, text: str) -> None: ...
 
 
 class Daemon:
@@ -62,6 +70,7 @@ class Daemon:
         engine: _Transcriber,
         inject: Callable[[str], None],
         *,
+        notify: _Notifier | None = None,
         max_record_s: float = DEFAULT_MAX_RECORD_S,
         clock: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] = lambda msg: print(msg, flush=True),
@@ -69,6 +78,7 @@ class Daemon:
         self._recorder = recorder
         self._engine = engine
         self._inject = inject
+        self._notify = notify or NullNotifier()
         self._max_record_s = max_record_s
         self._clock = clock
         self._log = log
@@ -93,6 +103,7 @@ class Daemon:
         self._recorder.start()
         self._recording = True
         self._start_t = self._clock()
+        self._notify.recording()  # persistent "armed" toast until stop replaces it
 
     def stop(self) -> str:
         """End capture, transcribe -> format -> inject, and return the emitted
@@ -104,11 +115,17 @@ class Daemon:
         # Flip to idle *before* the fallible work so a recorder/engine error can't
         # leave us stuck "recording" — a failed utterance still returns to idle.
         self._recording = False
-        audio = self._recorder.stop()
-        text = self._engine.transcribe(audio)
-        if text:
-            self._inject(text)
-        return text
+        text = ""
+        try:
+            audio = self._recorder.stop()
+            text = self._engine.transcribe(audio)
+            if text:
+                self._inject(text)
+            return text
+        finally:
+            # Always replace the persistent recording toast, even if transcribe/
+            # inject raised — otherwise the -t 0 toast hangs on screen forever.
+            self._notify.done(text)
 
     def remaining(self) -> float | None:
         """Seconds left before the safety auto-stop, or None when idle. `serve()`
@@ -200,6 +217,11 @@ def _build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_RECORD_S,
         help="safety auto-stop after this many seconds",
     )
+    p.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="disable the recording/done desktop notifications",
+    )
     return p
 
 
@@ -218,7 +240,8 @@ def main(argv: list[str] | None = None) -> int:
     # Give the recorder headroom over the daemon timeout so the daemon's auto-stop
     # is always the authoritative stop; the recorder cap is a pure memory backstop.
     recorder = Recorder(max_duration_s=args.max_record + 5.0, device=device_arg)
-    daemon = Daemon(recorder, engine, inject, max_record_s=args.max_record)
+    notifier = NullNotifier() if args.no_notify else Notifier()
+    daemon = Daemon(recorder, engine, inject, notify=notifier, max_record_s=args.max_record)
     print("susurro daemon: ready (warm).", flush=True)
     return serve(daemon)
 
