@@ -76,3 +76,24 @@ a marker via `wtype`. Purpose: de-risk the two Phase-2 unknowns before building 
 - **Teardown:** spike binds removed from `~/.config/hypr/bindings.conf` + `hyprctl reload`, daemon
   stopped, socket removed. `scripts/trigger_spike.py` kept as a reference artifact (like
   `gpu_spike.py`).
+
+**Step 7 (variable-length capture):** DONE. Added `Recorder` + extended `_WindowBuffer` in
+`susurro.audio` for Phase-2 hold-to-talk (arbitrary-length start/stop capture, mono float32,
+`sounddevice` still lazy-imported).
+
+- **`_WindowBuffer` cap:** added an optional `max_samples` ceiling. `add()` now *drops* blocks once
+  full (bounds memory, not just a trim at the end) and flips a `capped` flag; `result()` defaults to
+  the construction-time cap when called with no arg. `record_window` is unchanged (still passes an
+  explicit `max_samples`), so Phase-1 behaviour is preserved.
+- **`Recorder`:** `start()` opens the callback `InputStream` and begins accumulating into a fresh
+  capped `_WindowBuffer`; `stop()` halts the stream *before* reading (race-free) and returns the
+  captured audio trimmed to `max_duration_s` (default 30s). The callback closes over the local buffer
+  (not `self._buf`), so a stray callback during `stop()` can't hit nulled state. Guards: `start()`
+  raises if already recording, `stop()` raises if not. `max_duration_s` is the memory backstop; the
+  daemon's safety timeout (Step 8) is the real stop.
+- **Tests:** +4 (22 total). Hardware-free `_WindowBuffer` cap coverage (drops past cap, `capped`
+  flag, `result` trim, `max_samples=None` keeps all) + two `Recorder` guards that don't touch
+  PortAudio (`recording` False initially, `stop()`-without-`start()` raises). Full start/stop with a
+  real mic is exercised live at Step 11; the daemon state machine gets a faked recorder at Step 8.
+- **Suite:** 22 passed. `uvx ruff check` clean (ruff isn't a project dep — run it via `uvx ruff`,
+  not `uv run ruff`).

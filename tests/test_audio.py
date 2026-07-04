@@ -7,8 +7,9 @@ and WAV loading are pure and get exercised here without any device.
 from pathlib import Path
 
 import numpy as np
+import pytest
 
-from susurro.audio import SAMPLE_RATE, _WindowBuffer, load_wav
+from susurro.audio import SAMPLE_RATE, Recorder, _WindowBuffer, load_wav
 
 FIXTURE = Path(__file__).parent / "fixtures" / "jfk_16k_mono.wav"
 
@@ -51,6 +52,36 @@ def test_buffer_counts_xrun_status():
     buf.add(np.zeros((2, 1), dtype=np.float32), status="input overflow")
     buf.add(np.zeros((2, 1), dtype=np.float32), status=None)
     assert buf.xruns == 1
+
+
+def test_buffer_cap_drops_blocks_once_full():
+    buf = _WindowBuffer(max_samples=3)
+    buf.add(np.array([[0.1], [0.2]], dtype=np.float32))  # 2 samples, under cap
+    assert not buf.capped
+    buf.add(np.array([[0.3], [0.4]], dtype=np.float32))  # crosses cap, still stashed
+    assert not buf.capped
+    buf.add(np.array([[0.5]], dtype=np.float32))  # already full -> dropped
+    assert buf.capped
+    # result() defaults to the construction-time cap -> trimmed to 3 samples
+    np.testing.assert_allclose(buf.result(), [0.1, 0.2, 0.3], rtol=1e-6)
+
+
+def test_buffer_cap_none_keeps_everything():
+    buf = _WindowBuffer(max_samples=None)
+    buf.add(np.arange(5, dtype=np.float32).reshape(-1, 1))
+    assert not buf.capped
+    assert buf.result().tolist() == [0.0, 1.0, 2.0, 3.0, 4.0]
+
+
+# --- Recorder (hardware-free guards; start/stop need a mic) ----------------
+
+def test_recorder_not_recording_initially():
+    assert Recorder().recording is False
+
+
+def test_recorder_stop_without_start_raises():
+    with pytest.raises(RuntimeError, match="not recording"):
+        Recorder().stop()
 
 
 # --- load_wav --------------------------------------------------------------
