@@ -19,6 +19,7 @@ susurro = "susurro.__main__:main"
 [dependency-groups]
 dev = [
     "pytest>=8",
+    "ruff>=0.6",
 ]
 
 [build-system]
