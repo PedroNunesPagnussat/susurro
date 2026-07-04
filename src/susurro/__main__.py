@@ -17,7 +17,7 @@ import time
 
 import numpy as np
 
-from .audio import default_input_device, list_input_devices, record_window
+from .audio import SAMPLE_RATE, default_input_device, list_input_devices, record_window
 from .engine import DEFAULT_MODEL, Engine
 
 
@@ -48,7 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     engine = Engine(args.model, device=device)
 
     # Warm the CUDA kernels so the first real window already hits warm timing.
-    engine.transcribe(np.zeros(int(0.5 * 16_000), dtype=np.float32))
+    engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
 
     src = default_input_device() if args.device is None else args.device
     print(f"ready — input: {src}. Speak; Ctrl-C to quit.", flush=True)

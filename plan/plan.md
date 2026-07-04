@@ -53,12 +53,12 @@ This is a smoke harness, so the real acceptance is behavioural/manual (speak →
 
 ## Steps
 
-- [ ] **Step 0 — GPU spike.** Done when a ~15-line script loads `large-v3-turbo` int8 on `device="cuda"`, transcribes a short WAV, and prints correct text + per-clip timing + observed VRAM; and we've confirmed either GPU works or recorded the CPU fallback path. See `plan/step-gpu-spike.md` if it needs debugging sub-steps.
-- [ ] **Step 1 — Project scaffold.** Done when `uv init` layout exists with `pyproject.toml` pinning `faster-whisper`, `sounddevice`, `numpy`, `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`; `uv sync` succeeds; a `susurro/` package + `README` skeleton are in place.
-- [ ] **Step 2 — Audio capture module.** Done when a `sounddevice`-based capture records a fixed-duration 16kHz mono float32 window into a numpy array via callback, with device-selection + basic error handling, unit-exercisable without hardware where possible.
-- [ ] **Step 3 — Engine + formatter.** Done when a UI-agnostic `Engine` exposes `transcribe(audio) -> text` using the agreed defaults (`vad_filter`, `condition_on_previous_text=False`, `language="en"`, int8/cuda) and applies the rule-based formatter; formatter has passing unit tests; model is loaded once and reused (warm).
-- [ ] **Step 4 — Smoke-harness loop.** Done when running the entrypoint loops capture→transcribe→format→print, prints nothing/a quiet marker on silence, and handles Ctrl-C cleanly.
-- [ ] **Step 5 — Verify DoD.** Done when the live run meets the Phase-1 DoD (accurate transcripts, quiet on silence, <~1.5s/result warm on GPU), timing is logged, and results are recorded in `plan/log.md`.
+- [x] **Step 0 — GPU spike.** `scripts/gpu_spike.py` loads `large-v3-turbo` int8 on `device="cuda"`, transcribes the JFK fixture (verbatim-correct), prints timing + VRAM. GPU confirmed working (VRAM +1119 MiB, warm 0.938s/11s); no CPU fallback needed. Debugging sub-steps in `plan/step-gpu-spike.md` were not required.
+- [x] **Step 1 — Project scaffold.** `uv` src-layout with `pyproject.toml` pinning `faster-whisper`, `sounddevice`, `numpy`, `nvidia-cublas-cu12`, `nvidia-cudnn-cu12`; `uv sync` succeeds (Python 3.13, `ctranslate2==4.8.1`); `src/susurro/` package + `README` in place. `uv.lock` committed.
+- [x] **Step 2 — Audio capture module.** `susurro.audio.record_window` records a fixed-duration 16kHz mono float32 window via callback, with device selection (`--device`, `list_input_devices`) + `PortAudioError` handling. `_WindowBuffer` + `load_wav` are hardware-free and unit-tested (7 tests); `sounddevice` is lazy-imported.
+- [x] **Step 3 — Engine + formatter.** `susurro.engine.Engine.transcribe(audio) -> text` with the agreed defaults (`vad_filter=True`, `condition_on_previous_text=False`, `language="en"`, int8/cuda); model loaded once (warm) and reused. Pluggable `RuleBasedFormatter` (whitespace trim/collapse, drop empty/no-speech, no filler removal) with 9 passing unit tests; engine seam test (2, CUDA-gated).
+- [x] **Step 4 — Smoke-harness loop.** `uv run susurro` loops capture→transcribe→format→print, prints a quiet `·` marker on silence, handles Ctrl-C cleanly. Warms CUDA before the first window. Non-interactive paths (`--help`, `--list-devices`) smoke-tested.
+- [x] **Step 5 — Verify DoD.** Verified live by the user: `uv run susurro` produces accurate transcripts, stays quiet on silence, and lands warm results under the ~1.5s target (automated proxy: 0.938s). **Phase 1 DoD met.**
 
 ## Out of scope
 

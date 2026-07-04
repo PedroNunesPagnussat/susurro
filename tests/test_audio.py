@@ -7,7 +7,6 @@ and WAV loading are pure and get exercised here without any device.
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 from susurro.audio import SAMPLE_RATE, _WindowBuffer, load_wav
 

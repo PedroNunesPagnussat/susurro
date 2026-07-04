@@ -39,5 +39,12 @@ fifine USB mic at idx 7).
 
 **Suite:** 18 passed (9 formatter + 7 audio + 2 engine). All modules import clean.
 
-**Step 5 (verify DoD):** PENDING — needs a live mic run by the user (`uv run susurro`, speak).
-Automated proxy already met: warm transcribe 0.938s (<1.5s target), silence→"" verified.
+**Step 5 (verify DoD):** DONE — verified live by the user. `uv run susurro` gives accurate
+transcripts, quiet on silence, warm results under ~1.5s (automated proxy: 0.938s). **Phase 1 DoD
+met; the mic → local Whisper GPU → text pipeline works and the warm-model premise holds.**
+
+**Git + review:** repo initialised (`master`), initial commit `a6c778c`. `/code-review` (ruff +
+manual smell pass): no correctness/security bugs. Fixed — removed unused `pytest` import
+(`test_audio.py`), used `SAMPLE_RATE` instead of a magic `16_000` in the harness warmup. Ruff clean,
+18 tests green after fixes. Remaining notes (device label vs. capture default, uncaught mid-loop
+`record_window` error) left as accepted for a Phase-1 smoke tool.
