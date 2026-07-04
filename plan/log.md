@@ -130,3 +130,32 @@ plus a `susurro-daemon` console script.
 - **Runnable:** `susurro-daemon --help` works without loading the model (argparse before Engine).
   Live serve() is exercised end-to-end at Step 11. Suite 32 passed; `uv run ruff check` clean (ruff
   now pinned in dev deps).
+
+**Step 9 (client + Hyprland trigger):** DONE. `susurro.ctl` — the thin hold-to-talk client
+(`susurro-ctl {start,stop}`) — plus a shared `susurro._ipc.socket_path`, and README docs for the
+Hyprland `bind`/`bindr` + `exec-once` wiring. Did NOT touch the user's live Hyprland config (that's
+the Step-11 live wiring, user's call).
+
+- **Client is deliberately tiny + stdlib-only:** `import socket, sys` + `_ipc` (just `os`). No
+  argparse, no numpy, no engine — so process startup stays cheap (the spike flagged a fresh
+  `python3` per call as noticeable). `send(cmd)` opens the Unix socket, writes `start`/`stop`, closes.
+  Exit codes: 0 sent, 1 daemon-not-running (`FileNotFoundError`/`ConnectionRefusedError`), 2 bad
+  usage.
+- **Shared socket path:** extracted `daemon._socket_path` into `susurro._ipc.socket_path()` (stdlib
+  only) so daemon + client agree on `$XDG_RUNTIME_DIR/susurro.sock` without the client importing the
+  heavy daemon module. Daemon updated to use it.
+- **Console script:** `susurro-ctl = susurro.ctl:main` added to `pyproject.toml` (`susurro-daemon`
+  landed in Step 8). Both resync clean.
+- **Hardware probe (`hyprctl devices`):** box has a **Logitech MX Ergo trackball** (thumb
+  side-buttons — ideal for PTT) + a Keychron K10 Pro. README recommends a mouse thumb button
+  (`bind = , mouse:275, ...` / `bindr` on the same button), with `Menu` as the no-extra-hardware
+  fallback, and tells the user to confirm the exact button code with `wev`. Autostart via
+  `exec-once = .../.venv/bin/susurro-daemon` (venv console-script path, not `uv run`, to avoid
+  working-dir/resolution surprises in Hyprland).
+- **Tests:** +4 (36 total). Client tested against a *real* stdlib Unix socket (no daemon/model):
+  delivers `start`/`stop` (asserted on the received bytes, thread joined to kill the accept race),
+  `main` dispatches, daemon-absent -> rc 1, bad usage -> rc 2. `XDG_RUNTIME_DIR` pointed at a tmp dir
+  so `_ipc.socket_path` is exercised for real.
+- **Deferred to Step 11 (live):** picking/confirming the final key on the real hardware and the
+  end-to-end `serve()`+`ctl` socket loop under Hyprland. serve() itself is intentionally not
+  unit-tested (thin I/O shell; the state machine + client are covered). Suite 36 passed, ruff clean.

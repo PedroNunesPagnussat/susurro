@@ -28,6 +28,7 @@ from typing import Protocol
 
 import numpy as np
 
+from ._ipc import socket_path
 from .audio import SAMPLE_RATE, Recorder
 from .engine import DEFAULT_MODEL, Engine
 
@@ -45,10 +46,6 @@ class _Transcriber(Protocol):
     """Structural type for the engine seam (real: `engine.Engine`)."""
 
     def transcribe(self, audio: np.ndarray) -> str: ...
-
-
-def _socket_path() -> str:
-    return os.path.join(os.environ.get("XDG_RUNTIME_DIR", "/tmp"), "susurro.sock")
 
 
 def _wtype_inject(text: str) -> None:
@@ -169,7 +166,7 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     the intended serialization (one utterance at a time). Single-threaded — the
     safety timeout rides accept()'s socket timeout, so there are no locks.
     """
-    sock_path = sock_path or _socket_path()
+    sock_path = sock_path or socket_path()
     if os.path.exists(sock_path):
         os.unlink(sock_path)  # clear a stale socket from a crashed prior daemon
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

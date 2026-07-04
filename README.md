@@ -2,7 +2,7 @@
 
 Local, fully-offline voice dictation for Linux/Wayland/Hyprland, in the spirit of Wispr Flow. Name = "whisper" (es).
 
-**Status: Phase 1 — smoke harness.** Proves the mic → local Whisper (GPU) → text pipeline works and is fast on this machine, behind a clean `Engine`/UI boundary the later phases reuse. Not the real dictation app yet (see `plan/plan.md`).
+**Status: Phase 1 done; Phase 2 (hold-to-talk) in progress.** Phase 1 proved the mic → local Whisper (GPU) → text pipeline works and is fast on this machine, behind a clean `Engine`/UI boundary the later phases reuse. Phase 2 builds the real system-wide dictation app on top (see [Phase 2 below](#phase-2--hold-to-talk-in-progress) and `plan/plan.md`).
 
 ## What Phase 1 does
 
@@ -30,25 +30,77 @@ uv sync
 uv run susurro          # smoke-harness loop; Ctrl-C to quit
 ```
 
+## Phase 2 — hold-to-talk (in progress)
+
+Real system-wide dictation: **hold a key → speak → release → clean text is typed
+into the focused window**, fully local. Split into a warm **daemon** (owns the
+model) and a thin **client** the compositor triggers on key press/release.
+
+```sh
+uv run susurro-daemon        # warm daemon: loads the model, listens on a Unix socket
+uv run susurro-ctl start     # begin capture   (bound to key press)
+uv run susurro-ctl stop      # end -> transcribe -> type into focused window (key release)
+```
+
+The daemon loads + warms the model once, so per-utterance latency is
+inference-bound. A safety auto-stop (`--max-record`, default 30s) guarantees a
+missed release can't wedge it in "recording". `susurro-ctl` is stdlib-only and
+tiny so the trigger stays snappy.
+
+### Hyprland trigger
+
+Pick a **modifier-free, dedicated** key: its release always fires (a modifier
+chord can drop the release → stuck recording). A **mouse thumb/side-button** is
+ideal for push-to-talk (keyboard stays free); `Menu` works with no extra
+hardware. Find a button's code with `wev` (press it, read the `button` number).
+
+In `~/.config/hypr/` (e.g. `bindings.conf`) — `bind` = press, `bindr` = release,
+**same key**:
+
+```ini
+# mouse thumb button (example: 275 = back; use wev to confirm yours)
+bind  = , mouse:275, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start
+bindr = , mouse:275, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop
+
+# or a modifier-free keyboard key:
+# bind  = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start
+# bindr = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop
+```
+
+Autostart the warm daemon with the session:
+
+```ini
+exec-once = /home/pedro/dev/susurro/.venv/bin/susurro-daemon
+```
+
+Use the venv's console-script paths (above) rather than `uv run` in Hyprland —
+no working-directory or resolution surprises. `hyprctl reload` after editing.
+
 ## Test
 
 ```sh
-uv run pytest           # formatter unit tests always run;
-                        # the engine-transcribe test skips without CUDA + model
+uv run pytest           # pure logic (formatter, buffer, daemon state machine,
+                        # client) runs everywhere; the engine-transcribe test
+                        # skips without CUDA + model
+uv run ruff check src tests
 ```
 
 ## Layout
 
 ```
 src/susurro/
-  audio.py        # sounddevice capture: fixed-window 16kHz mono float32
+  audio.py        # sounddevice capture: fixed-window + variable-length (Recorder)
   engine.py       # UI-agnostic Engine: audio -> transcript (warm model)
   formatter.py    # pure rule-based cleanup (unit-tested)
-  __main__.py     # smoke-harness loop / entrypoint
+  daemon.py       # Phase 2: warm daemon + idle<->recording state machine (Unix socket)
+  ctl.py          # Phase 2: thin hold-to-talk client (susurro-ctl start|stop)
+  _ipc.py         # shared socket path (stdlib-only; keeps the client light)
+  __main__.py     # Phase 1 smoke-harness loop / entrypoint
 scripts/
-  gpu_spike.py    # Step 0: prove large-v3-turbo int8 loads + runs on CUDA
+  gpu_spike.py     # Step 0: prove large-v3-turbo int8 loads + runs on CUDA
+  trigger_spike.py # Step 6: Hyprland bind/bindr -> socket -> wtype spike
 tests/
-  test_formatter.py
-  test_engine.py  # skipped when no CUDA/model
+  test_formatter.py  test_audio.py  test_daemon.py  test_ctl.py
+  test_engine.py     # skipped when no CUDA/model
   fixtures/
 ```
