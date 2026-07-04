@@ -15,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 susurro = "susurro.__main__:main"
+susurro-daemon = "susurro.daemon:main"
 
 [dependency-groups]
 dev = [

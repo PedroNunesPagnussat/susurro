@@ -97,3 +97,36 @@ a marker via `wtype`. Purpose: de-risk the two Phase-2 unknowns before building 
   real mic is exercised live at Step 11; the daemon state machine gets a faked recorder at Step 8.
 - **Suite:** 22 passed. `uvx ruff check` clean (ruff isn't a project dep — run it via `uvx ruff`,
   not `uv run ruff`).
+
+**Step 8 (daemon core):** DONE. `susurro.daemon` — the warm always-on half of hold-to-talk. A
+pure, dependency-injected `Daemon` state machine (idle<->recording) + a thin `serve()` socket shell,
+plus a `susurro-daemon` console script.
+
+- **`Daemon` (the seam):** `start()` / `stop()` / `check_timeout()` / `remaining()` / `abort()`.
+  `recorder`, `engine`, `inject`, and `clock` are all constructor-injected, so the whole machine
+  unit-tests with fakes + a fake clock — no mic, model, socket, or wall-clock. On `stop` (and on the
+  safety timeout) it does transcribe -> format(engine-internal) -> inject; empty transcript => no
+  inject.
+- **Anti-wedge, three ways** (the Step-6 missed-release hazard): (1) safety auto-stop timeout
+  (`max_record_s`, default 30s) stops+injects as if a real stop arrived; (2) `stop()` flips to idle
+  *before* the fallible transcribe so a recorder/engine error can't leave it stuck recording; (3) a
+  duplicate `start` (re-press after a lost release) discards the orphaned capture and restarts
+  cleanly instead of raising. A late `stop` arriving after an auto-stop is a harmless no-op.
+- **`serve()` socket shell:** Unix stream socket at `$XDG_RUNTIME_DIR/susurro.sock`, `start`/`stop`
+  line protocol, single client, single-flight (transcription blocks the accept loop by design).
+  Single-threaded, no locks: the safety timeout rides `accept()`'s socket timeout
+  (`settimeout(remaining)`, floored to 0.05s so it can't flip to non-blocking and busy-spin). Clean
+  lifecycle: unlink stale socket on bind, `abort()` (release mic) + unlink on shutdown/Ctrl-C. A
+  failing command is caught, logged, and `abort()`ed so the daemon stays up.
+- **Injection default:** a minimal inline `_wtype_inject` (mirrors the proven spike), explicitly
+  marked for extraction into `susurro.inject` at Step 10. Tests never touch it (they inject a spy).
+- **Recorder headroom:** the daemon builds `Recorder(max_duration_s = max_record + 5s)` so the
+  daemon's timeout is always the authoritative stop and the recorder's buffer cap stays a pure
+  memory backstop.
+- **Tests:** +10 (32 total) covering happy path, empty-transcript no-inject, stop-without-start
+  no-op, duplicate-start restart, idle-after-engine-error (no wedge), timeout fires/doesn't-fire/
+  idle-noop, late-stop-after-auto-stop no-op, and `remaining()` countdown/clamp. Fakes:
+  `FakeRecorder`/`FakeEngine`/`FakeClock` + an inject spy (DI, like the formatter seam).
+- **Runnable:** `susurro-daemon --help` works without loading the model (argparse before Engine).
+  Live serve() is exercised end-to-end at Step 11. Suite 32 passed; `uv run ruff check` clean (ruff
+  now pinned in dev deps).
