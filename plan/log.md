@@ -159,3 +159,27 @@ the Step-11 live wiring, user's call).
 - **Deferred to Step 11 (live):** picking/confirming the final key on the real hardware and the
   end-to-end `serve()`+`ctl` socket loop under Hyprland. serve() itself is intentionally not
   unit-tested (thin I/O shell; the state machine + client are covered). Suite 36 passed, ruff clean.
+
+**Step 10 (injection module):** DONE. Extracted the daemon's inline `_wtype_inject` into
+`susurro.inject.inject(text)` and hardened it; `daemon.main()` now passes `inject` as the DI'd
+callable (tests still inject a spy, so the seam is unchanged).
+
+- **What moved + what hardened:** the inline default was a faithful copy of the proven spike
+  (`subprocess.run(["wtype", text])`, non-zero rc surfaced on stderr, never raises). The one added
+  guard is the **empty/whitespace no-op** (`if not text.strip(): return`) so we never spawn wtype
+  with nothing to type. The daemon already guards `if text:` before injecting; this is belt-and-braces
+  at the seam (whitespace-only text is truthy, so the `.strip()` check is the real backstop).
+- **Kept the never-crash contract:** scope is the documented non-zero-rc case (surface on stderr).
+  A missing `wtype` binary still raises `FileNotFoundError` up into `serve()`'s broad handler (which
+  logs + `abort()`s) — didn't widen the catch, matched `_wtype_inject` exactly to stay faithful.
+- **Daemon cleanup:** dropped the now-unused `import subprocess` from `daemon.py`; `import inject`
+  from `.inject`. `susurro-daemon --help` still works without loading the model.
+- **Tests:** +5 (41 total). `test_inject.py` patches `susurro.inject.subprocess.run` (no real wtype):
+  command construction is `["wtype", text]`, empty/whitespace (`""`, `"   "`, `"\n\t "`) is a no-op
+  (no subprocess call), and a non-zero rc is surfaced on stderr without raising. TDD: wrote the test
+  red (ModuleNotFoundError) before creating the module. Suite 41 passed; ruff clean.
+- **README:** added an "Injection (and the clipboard fallback)" subsection documenting `wl-copy` +
+  synthesized paste as a fallback-only (clobbers clipboard, per-app paste shortcut), plus `inject.py`
+  in the layout + `test_inject.py` in the test list.
+- **Deferred:** Step 11 (live end-to-end + DoD) still needs the user (Hyprland config edit + mic +
+  GPU). Step 10 was fully in-scope with no hardware.

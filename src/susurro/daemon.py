@@ -20,7 +20,6 @@ from __future__ import annotations
 import argparse
 import os
 import socket
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -31,6 +30,7 @@ import numpy as np
 from ._ipc import socket_path
 from .audio import SAMPLE_RATE, Recorder
 from .engine import DEFAULT_MODEL, Engine
+from .inject import inject
 
 DEFAULT_MAX_RECORD_S = 30.0
 
@@ -46,19 +46,6 @@ class _Transcriber(Protocol):
     """Structural type for the engine seam (real: `engine.Engine`)."""
 
     def transcribe(self, audio: np.ndarray) -> str: ...
-
-
-def _wtype_inject(text: str) -> None:
-    """Type `text` into the focused window via wtype. Minimal inline default,
-    extracted + hardened into `susurro.inject` at Step 10. Never raises: a wtype
-    failure is surfaced on stderr instead of crashing the daemon."""
-    proc = subprocess.run(["wtype", text], capture_output=True, text=True)
-    if proc.returncode != 0:
-        print(
-            f"susurro: wtype failed (rc={proc.returncode}): {proc.stderr.strip()}",
-            file=sys.stderr,
-            flush=True,
-        )
 
 
 class Daemon:
@@ -231,7 +218,7 @@ def main(argv: list[str] | None = None) -> int:
     # Give the recorder headroom over the daemon timeout so the daemon's auto-stop
     # is always the authoritative stop; the recorder cap is a pure memory backstop.
     recorder = Recorder(max_duration_s=args.max_record + 5.0, device=device_arg)
-    daemon = Daemon(recorder, engine, _wtype_inject, max_record_s=args.max_record)
+    daemon = Daemon(recorder, engine, inject, max_record_s=args.max_record)
     print("susurro daemon: ready (warm).", flush=True)
     return serve(daemon)
 

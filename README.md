@@ -76,6 +76,23 @@ exec-once = /home/pedro/dev/susurro/.venv/bin/susurro-daemon
 Use the venv's console-script paths (above) rather than `uv run` in Hyprland —
 no working-directory or resolution surprises. `hyprctl reload` after editing.
 
+### Injection (and the clipboard fallback)
+
+Text is typed into the focused window with `wtype` (Wayland virtual-keyboard
+protocol; Hyprland-native, no uinput / root / `input` group). Empty or
+whitespace-only transcripts are a no-op.
+
+If `wtype` misbehaves for you — very long paragraphs, or an app that drops fast
+synthetic keystrokes — the robust fallback is **clipboard + paste**:
+
+```sh
+wl-copy "your text"     # then synthesize the app's paste shortcut, e.g. Ctrl+V
+```
+
+It's a documented fallback, **not** the default: it clobbers the clipboard and
+the paste shortcut varies per app (terminals often use Ctrl+Shift+V). `wtype`
+stays the default.
+
 ## Test
 
 ```sh
@@ -94,13 +111,14 @@ src/susurro/
   formatter.py    # pure rule-based cleanup (unit-tested)
   daemon.py       # Phase 2: warm daemon + idle<->recording state machine (Unix socket)
   ctl.py          # Phase 2: thin hold-to-talk client (susurro-ctl start|stop)
+  inject.py       # Phase 2: type transcript into focused window via wtype
   _ipc.py         # shared socket path (stdlib-only; keeps the client light)
   __main__.py     # Phase 1 smoke-harness loop / entrypoint
 scripts/
   gpu_spike.py     # Step 0: prove large-v3-turbo int8 loads + runs on CUDA
   trigger_spike.py # Step 6: Hyprland bind/bindr -> socket -> wtype spike
 tests/
-  test_formatter.py  test_audio.py  test_daemon.py  test_ctl.py
+  test_formatter.py  test_audio.py  test_daemon.py  test_ctl.py  test_inject.py
   test_engine.py     # skipped when no CUDA/model
   fixtures/
 ```
