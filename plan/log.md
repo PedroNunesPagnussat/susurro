@@ -183,3 +183,31 @@ callable (tests still inject a spy, so the seam is unchanged).
   in the layout + `test_inject.py` in the test list.
 - **Deferred:** Step 11 (live end-to-end + DoD) still needs the user (Hyprland config edit + mic +
   GPU). Step 10 was fully in-scope with no hardware.
+
+**Step 11 (wire end-to-end + live DoD):** IN PROGRESS — config wired live, DoD verification pending (user, needs mic/GPU).
+
+- **Interaction model chosen: hold-to-talk on the `Menu` key** (user picked this over toggle). Toggle
+  would need a new daemon `toggle` verb + client support (~15 lines + tests); NOT built — the existing
+  start/stop hold model is used as-is (zero code change), matching the tested design.
+- **Live config edits — OUTSIDE the repo, so they will NOT show in git:**
+  - `~/.config/hypr/bindings.conf`:
+    `bindd = , Menu, Dictate (hold to talk), exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start`
+    `bindr = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop`
+    Verified registered via `hyprctl binds` (press -> start release=False; release -> stop release=True).
+  - `~/.config/hypr/autostart.conf`:
+    `exec-once = uwsm-app -- /home/pedro/dev/susurro/.venv/bin/susurro-daemon`
+    (matches the existing `uwsm-app -- hyprsunset` convention; fires at next login).
+  - `hyprctl reload` applied.
+- **Daemon state:** a manual `uv run susurro-daemon` was already running (user-started), socket at
+  `/run/user/1000/susurro.sock` — so it is testable now. The autostart (uwsm) daemon takes over at
+  next login. The manual one may predate the Step-10 edit but is behaviorally identical (inject == old
+  _wtype_inject for real text); restart only if you want the exact committed code.
+- **REMAINING = the actual DoD (user's, on hardware):** hold Menu, speak, release -> accurate text in
+  the focused window, warm latency ~<=1.5s, and a missed release cannot wedge (30s safety auto-stop
+  verified). If Menu does not fire, confirm the keysym with `wev` and adjust the bind.
+- **Open decision (from Step-10 review, NOT applied):** harden `inject.py` — add `subprocess.run(...,
+  timeout=T)` + catch `TimeoutExpired`, and catch `FileNotFoundError` — so the now-public `inject`
+  seam literally never raises and a stuck `wtype` can't permanently wedge the single-threaded accept
+  loop (the last anti-wedge gap). Keep `T` generous (pathological-hang backstop, not a latency knob;
+  a too-tight timeout SIGKILLs mid-type -> half-typed text). Would add 2 tests
+  (`FileNotFoundError`/`TimeoutExpired` side_effects). Recommended for Step 11 live-hardening.
