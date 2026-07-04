@@ -191,11 +191,11 @@ callable (tests still inject a spy, so the seam is unchanged).
   start/stop hold model is used as-is (zero code change), matching the tested design.
 - **Live config edits — OUTSIDE the repo, so they will NOT show in git:**
   - `~/.config/hypr/bindings.conf`:
-    `bindd = , Menu, Dictate (hold to talk), exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start`
-    `bindr = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop`
+    `bindd = , Menu, Dictate (hold to talk), exec, ~/dev/susurro/.venv/bin/susurro-ctl start`
+    `bindr = , Menu, exec, ~/dev/susurro/.venv/bin/susurro-ctl stop`
     Verified registered via `hyprctl binds` (press -> start release=False; release -> stop release=True).
   - `~/.config/hypr/autostart.conf`:
-    `exec-once = uwsm-app -- /home/pedro/dev/susurro/.venv/bin/susurro-daemon`
+    `exec-once = uwsm-app -- ~/dev/susurro/.venv/bin/susurro-daemon`
     (matches the existing `uwsm-app -- hyprsunset` convention; fires at next login).
   - `hyprctl reload` applied.
 - **Daemon state:** a manual `uv run susurro-daemon` was already running (user-started), socket at

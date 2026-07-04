@@ -4,7 +4,7 @@ Local, fully-offline voice dictation for Linux/Wayland/Hyprland, in the spirit o
 
 ## Background
 
-Greenfield project at `/home/pedro/dev/susurro` (sibling to other projects under `~/dev`; not yet a git repo). Target machine, verified via probes:
+Greenfield project at `~/dev/susurro` (sibling to other projects under `~/dev`; not yet a git repo). Target machine, verified via probes:
 
 - **OS/session:** Arch Linux, Wayland, Hyprland compositor. Shell zsh. Currently operating **inside tmux** (`TERM=tmux-256color`) — this rules out reliable terminal key-release detection (kitty keyboard protocol is mangled by tmux).
 - **GPU:** NVIDIA GTX 1060 6GB (Pascal). Weak FP16 throughput but has DP4A, so **int8 is the right quantization**. `nvidia-smi` present.

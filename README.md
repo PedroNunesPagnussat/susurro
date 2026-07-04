@@ -59,18 +59,18 @@ In `~/.config/hypr/` (e.g. `bindings.conf`) — `bind` = press, `bindr` = releas
 
 ```ini
 # mouse thumb button (example: 275 = back; use wev to confirm yours)
-bind  = , mouse:275, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start
-bindr = , mouse:275, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop
+bind  = , mouse:275, exec, ~/dev/susurro/.venv/bin/susurro-ctl start
+bindr = , mouse:275, exec, ~/dev/susurro/.venv/bin/susurro-ctl stop
 
 # or a modifier-free keyboard key:
-# bind  = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl start
-# bindr = , Menu, exec, /home/pedro/dev/susurro/.venv/bin/susurro-ctl stop
+# bind  = , Menu, exec, ~/dev/susurro/.venv/bin/susurro-ctl start
+# bindr = , Menu, exec, ~/dev/susurro/.venv/bin/susurro-ctl stop
 ```
 
 Autostart the warm daemon with the session:
 
 ```ini
-exec-once = /home/pedro/dev/susurro/.venv/bin/susurro-daemon
+exec-once = ~/dev/susurro/.venv/bin/susurro-daemon
 ```
 
 Use the venv's console-script paths (above) rather than `uv run` in Hyprland —

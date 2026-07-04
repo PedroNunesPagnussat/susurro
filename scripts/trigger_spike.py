@@ -24,8 +24,8 @@ types into *that* terminal since it holds focus):
 ...or wire the real trigger in ~/.config/hypr/hyprland.conf and `hyprctl reload`:
 
     # Modifier-free key is cleanest (see NOTES). `Menu` types nothing on its own:
-    bind  = , Menu, exec, python3 /home/pedro/dev/susurro/scripts/trigger_spike.py start
-    bindr = , Menu, exec, python3 /home/pedro/dev/susurro/scripts/trigger_spike.py stop
+    bind  = , Menu, exec, python3 ~/dev/susurro/scripts/trigger_spike.py start
+    bindr = , Menu, exec, python3 ~/dev/susurro/scripts/trigger_spike.py stop
 
 Now focus an editor or browser, hold the key, wait, release. On release the
 daemon types a marker like `[susurro spike: held 1.23s] ` into that window.
