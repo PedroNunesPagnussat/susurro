@@ -60,10 +60,36 @@ This is a smoke harness, so the real acceptance is behavioural/manual (speak →
 - [x] **Step 4 — Smoke-harness loop.** `uv run susurro` loops capture→transcribe→format→print, prints a quiet `·` marker on silence, handles Ctrl-C cleanly. Warms CUDA before the first window. Non-interactive paths (`--help`, `--list-devices`) smoke-tested.
 - [x] **Step 5 — Verify DoD.** Verified live by the user: `uv run susurro` produces accurate transcripts, stays quiet on silence, and lands warm results under the ~1.5s target (automated proxy: 0.938s). **Phase 1 DoD met.**
 
+## Phase 2 — Plan (active)
+
+Real system-wide hold-to-talk dictation on Hyprland, built on Phase 1's warm `Engine`: **hold a key → speak → release → clean text injected into the focused window**, fully local. The Step-6 spike (below) proved the trigger + injection mechanism live and set the decisions.
+
+### Phase 2 Decisions
+
+- **Trigger = Hyprland `bind`(press)/`bindr`(release) on a modifier-free dedicated key, + a daemon safety auto-stop timeout.** The spike proved release-driven start/stop works, but also that a **modifier chord (`SUPER,R`) drops the release event if the modifier is lifted first** → stuck "recording" state. A lone dedicated key's release always fires; a max-record timeout in the daemon guarantees a missed release can't wedge it. Final key is chosen at wiring time by quick hardware detection (`wev`/`hyprctl devices`); candidates: `Menu`, a spare Fn/`F13+`, or a **mouse side-button** (`mouse:275/276`, ideal for PTT). **evdev / `input`-group access is NOT needed** — the compositor is the trigger source (the plan's original Phase-2 permission blocker is moot).
+- **Daemon owns the warm model; client is thin.** Model load + CUDA warm is amortized once at daemon start (Hyprland `exec-once`); per-utterance cost is just `transcribe`. The client is a trivial socket write, so release→text latency is dominated by inference, not process spawn — exactly the split the Phase-1 "daemon deferred until an external trigger forces it" decision predicted. Client must stay light (a fresh `python3` per call was noticeable in the spike); keep minimal-import or make resident if latency bites.
+- **IPC = Unix stream socket, tiny line protocol (`start`/`stop`).** No framework. Socket at `$XDG_RUNTIME_DIR/susurro.sock` (per-user, tmpfs, auto-cleaned; unlink on daemon start/exit). Daemon is authoritative for state; single client at a time.
+- **Injection = `wtype`** (Wayland virtual-keyboard protocol; proven in the spike, Hyprland-native, no uinput/root). Empty/no-speech transcript → no-op (don't type). **Clipboard+paste** (`wl-copy` + synthesized paste) kept as a documented fallback for long paragraphs / apps that drop fast synthetic keys — not the default (clobbers clipboard, per-app paste shortcut varies).
+- **Variable-length capture reuses the Phase-1 callback model.** Stream opens on `start`, closes on `stop`; `_WindowBuffer` assembles arbitrary-length mono float32. No fixed duration; a max-duration cap ties into the safety timeout.
+- **Cleanup stays pluggable.** Phase-1 `RuleBasedFormatter` is the default; an **ollama-backed LLM formatter** (~3B Q4, `ollama` is present) is an isolated, feature-flagged later step behind the existing `Formatter` seam — it does not block core hold-to-talk.
+- **Daemon lifecycle = Hyprland `exec-once` autostart.** Warm before first use. Crash recovery = user restart for now; systemd-user supervision deferred (noted, not built).
+
+### Phase 2 Steps
+
+- [x] **Step 6 — Trigger+injection spike.** `scripts/trigger_spike.py`: Hyprland `bind`/`bindr` → Unix socket → `wtype`. Live-verified: release-driven start/stop + injection into the focused window both work; surfaced the modifier-release fragility that drives the trigger + timeout decisions. See `plan/log.md`.
+- [ ] **Step 7 — Variable-length capture.** Add start/stop recording to `susurro.audio` (a `Recorder` / `record_stream` reusing `_WindowBuffer` + the callback `InputStream`), returning arbitrary-length mono float32 with a max-duration cap. Unit-test the buffer assembly hardware-free (extends the Phase-1 `_WindowBuffer` tests); `sounddevice` stays lazy-imported.
+- [ ] **Step 8 — Daemon core.** `susurro.daemon`: warm `Engine` + `Recorder`, Unix-socket listener, idle↔recording state machine, safety auto-stop timeout; on `stop` → transcribe → format → inject. Clean socket lifecycle, single-flight. State machine unit-tested with fake recorder/engine via DI (like the formatter seam).
+- [ ] **Step 9 — Client + Hyprland trigger.** `susurro-ctl {start,stop}` entry point (low-latency socket write); detect + choose the modifier-free key; document the `bind`/`bindr` snippet and the `exec-once` autostart line.
+- [ ] **Step 10 — Injection module.** Extract + harden the spike's injection into `susurro.inject.inject(text)` via `wtype` (no-op on empty, surface `wtype` failures); document the clipboard-paste fallback. Unit-test command construction / empty-text no-op.
+- [ ] **Step 11 — Wire end-to-end + live DoD.** Full hold→speak→release→text-in-focused-window with autostart. DoD: accurate transcript lands in the correct focused window, warm latency comparable to Phase 1 (~≤1.5s for short utterances), and a missed release cannot wedge the daemon (timeout verified).
+- [ ] **Step 12 (optional) — LLM cleanup formatter.** ollama-backed `Formatter` behind the existing seam, feature-flagged; compare against rule-based on real dictation.
+
+**Phase 2 DoD:** holding the trigger key, speaking, and releasing injects an accurate transcript into whatever window is focused — fully local, warm latency comparable to Phase 1, with no stuck-recording failure mode.
+
 ## Out of scope
 
-- **Phase 2** (future): real hold-to-talk via Hyprland global hotkey, evdev/`input`-group setup, daemon+client over Unix socket, Wayland text injection into focused window, local-LLM cleanup formatter.
-- **Phase 3** (future, optional): cloud transcription/cleanup backend.
+- **Phase 3** (future, optional): cloud transcription/cleanup backend behind the same formatter/engine seams.
+- Phase 2's trigger is the **compositor**, so evdev / `/dev/input` / `input`-group setup is **not** needed (proven in the Step-6 spike).
 - **Streaming / partial results** — explicitly dropped, not a requirement in any phase.
 - **Filler-word removal in Phase 1** — deferred to the Phase 2 LLM stage.
 - **Multilingual support** — English-only by decision.

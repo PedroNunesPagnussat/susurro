@@ -48,3 +48,31 @@ manual smell pass): no correctness/security bugs. Fixed — removed unused `pyte
 (`test_audio.py`), used `SAMPLE_RATE` instead of a magic `16_000` in the harness warmup. Ruff clean,
 18 tests green after fixes. Remaining notes (device label vs. capture default, uncaught mid-loop
 `record_window` error) left as accepted for a Phase-1 smoke tool.
+
+## 2026-07-03 — Phase 2
+
+**Step 6 (trigger + injection spike):** PASS, live-verified by the user. `scripts/trigger_spike.py`
+(stdlib only, no audio/model/venv) — a minimal daemon+client over a Unix socket
+(`$XDG_RUNTIME_DIR/susurro-spike.sock`) driven by Hyprland `bind`(press)/`bindr`(release), injecting
+a marker via `wtype`. Purpose: de-risk the two Phase-2 unknowns before building the real daemon.
+
+- **Trigger works:** press→`START`, release→`STOP`, hold duration measured accurately
+  (`held=2.561s` etc. from `time.perf_counter`).
+- **Injection works:** `wtype` typed `[susurro spike: held 2.56s] ` straight into the focused window
+  (Wayland virtual-keyboard protocol — no uinput/root/`input` group). The plan.md `input`-group
+  blocker is confirmed **moot**: trigger comes from the compositor, not evdev.
+- **Modifier-held-during-injection did NOT bite:** feared SUPER+letter WM-bind collisions didn't
+  fire, because the ~30ms client/socket startup let the user finish releasing SUPER before `wtype`
+  typed. Clean marker landed.
+- **Real finding — missed release:** with a modifier chord (`SUPER, R`), `bindr` is **skipped if
+  SUPER is released before R** → an orphaned `START` with no `STOP` (daemon logged "START while
+  already recording"). A stuck-recording state is a genuine hazard. → Drives Phase-2 decisions:
+  **modifier-free dedicated key** (release always fires; final key TBD by hardware) + a **daemon
+  safety auto-stop timeout** as a backstop.
+- **Tooling on the box:** Hyprland 0.55.2 (Omarchy), `wtype` + `wl-clipboard` present, `ydotool`
+  missing and `/dev/uinput` root-only (so `wtype` is the path anyway), `ollama` present (for the
+  later LLM formatter). Client latency was a fresh `python3` start per call — note for the real
+  client (keep it light or resident).
+- **Teardown:** spike binds removed from `~/.config/hypr/bindings.conf` + `hyprctl reload`, daemon
+  stopped, socket removed. `scripts/trigger_spike.py` kept as a reference artifact (like
+  `gpu_spike.py`).
