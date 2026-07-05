@@ -1,18 +1,19 @@
-"""Phase-2 daemon: the warm, always-on half of hold-to-talk.
+"""The warm, always-on daemon: the half of hold-to-talk that owns the model.
 
 Holds the warm `Engine` + a `Recorder` and drives an idle<->recording state
 machine over a Unix socket (tiny `start`/`stop` line protocol). The client
-(Step 9, `susurro-ctl`) is a trivial socket write bound to a Hyprland key; all the
-cost (model load, CUDA warm) is paid once here at `exec-once` autostart, so
-per-utterance latency is inference-bound.
+(`susurro-ctl`) is a trivial socket write bound to a Hyprland key; all the cost
+(model load, CUDA warm) is paid once here at autostart, so per-utterance latency
+is inference-bound.
 
 On `stop` (or the safety auto-stop timeout): transcribe -> format -> inject into
-the focused window. The state machine (`Daemon`) is pure and DI'd — recorder,
-engine, inject, and clock are all injectable — so it unit-tests with fakes: no
-mic, model, socket, or wall-clock. `serve()` is the thin socket shell around it.
+the focused window. The state machine (`Daemon`) is pure and dependency-injected
+— recorder, engine, inject, notify, and clock are all injectable — so it
+unit-tests with fakes: no mic, model, socket, or wall-clock. `serve()` is the thin
+socket shell around it.
 
-The safety timeout is the anti-wedge backstop the Step-6 spike proved we need: a
-missed key release (a dropped `stop`) must not leave the daemon recording forever.
+The safety timeout is the anti-wedge backstop: a missed key release (a dropped
+`stop`) must not leave the daemon recording forever.
 """
 
 from __future__ import annotations

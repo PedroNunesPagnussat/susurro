@@ -1,7 +1,7 @@
 """Unit tests for the hardware-free parts of the capture module.
 
-The PortAudio stream itself needs a mic, but the block-assembly (`_WindowBuffer`)
-and WAV loading are pure and get exercised here without any device.
+The PortAudio stream needs a mic, but the block-assembly (`_WindowBuffer`) and WAV
+loading are pure and get exercised here without any device.
 """
 
 from pathlib import Path
@@ -30,10 +30,10 @@ def test_buffer_takes_first_channel_of_multichannel_block():
     np.testing.assert_allclose(buf.result(), [0.1, 0.2], rtol=1e-6)
 
 
-def test_buffer_trims_to_max_samples():
-    buf = _WindowBuffer()
+def test_buffer_trims_to_construction_cap():
+    buf = _WindowBuffer(max_samples=4)
     buf.add(np.arange(10, dtype=np.float32).reshape(-1, 1))
-    assert buf.result(max_samples=4).tolist() == [0.0, 1.0, 2.0, 3.0]
+    assert buf.result().tolist() == [0.0, 1.0, 2.0, 3.0]
 
 
 def test_buffer_result_is_float32():

@@ -2,18 +2,17 @@
 
 The daemon's terminal step: on `stop`, the formatted transcript is typed into
 whatever window holds focus. `wtype` speaks the Wayland virtual-keyboard protocol
-(Hyprland-native, no uinput / no root / no `input` group) — proven in the Step-6
-spike and extracted here from the daemon's inline default.
+(Hyprland-native, no uinput / no root / no `input` group).
 
 Never raises on a wtype failure: a non-zero return is surfaced on stderr so a
-transient injection error can't crash the long-lived daemon. Empty/whitespace
-text is a no-op — the formatter already drops silence, this is the belt-and-braces
-guard so we never spawn wtype with nothing to type.
+transient injection error can't crash the long-lived daemon. Empty/whitespace text
+is a no-op (the formatter already drops silence; this is the belt-and-braces guard
+so we never spawn wtype with nothing to type).
 
-Fallback (documented in the README, not the default): for very long paragraphs or
-apps that drop fast synthetic keystrokes, `wl-copy <text>` + a synthesized paste
-is more robust, but it clobbers the clipboard and the paste shortcut is per-app,
-so `wtype` stays the default.
+For very long paragraphs or apps that drop fast synthetic keystrokes, clipboard +
+paste (`wl-copy` + a synthesized paste) is more robust, but it clobbers the
+clipboard and the paste shortcut is per-app, so `wtype` stays the default (see
+README for the manual fallback).
 """
 
 from __future__ import annotations

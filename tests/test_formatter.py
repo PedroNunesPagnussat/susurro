@@ -40,7 +40,7 @@ def test_whitespace_only_is_dropped(fmt):
 
 
 def test_does_not_remove_filler_or_short_words(fmt):
-    # "the sum" != filler; regex filler-removal was explicitly ruled out for Phase 1.
+    # "the sum" != filler; regex filler-removal is deliberately not done here.
     text = "um the sum of you know the parts"
     assert fmt.format(text) == "um the sum of you know the parts"
 

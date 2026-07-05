@@ -1,8 +1,8 @@
 """The UI-agnostic core: audio window -> clean text.
 
-`Engine` owns the warm faster-whisper model (loaded once, reused) and runs the
-agreed Phase-1 defaults. Everything UI/driver-specific stays out of here so Phase 2
-can reuse the Engine unchanged behind a hotkey + Unix socket.
+`Engine` owns the warm faster-whisper model (loaded once, reused) and exposes a
+single `transcribe(audio) -> str`. Nothing UI- or driver-specific lives here, so
+the daemon, the mic test, and the eval harness all share one transcription path.
 """
 
 from __future__ import annotations

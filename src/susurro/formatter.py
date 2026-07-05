@@ -1,12 +1,12 @@
-"""Rule-based cleanup formatter — the Phase-1 formatter stage.
+"""Rule-based text cleanup: the seam between what Whisper produced and what gets
+typed.
 
-The formatter is a pluggable seam from day one (`Formatter` protocol) so Phase 2
-can drop in a local-LLM cleanup impl behind the same interface without touching
-the Engine. Phase 1's only impl trims/collapses whitespace and drops empty /
-no-speech results.
+`Formatter` is a protocol so a smarter impl (e.g. a local-LLM cleanup pass) can
+drop in behind the same interface without touching the Engine. The only impl today
+trims/collapses whitespace and drops empty / no-speech results.
 
 Deliberately **no filler-word removal**: regex eats real words ("the sum" is not
-filler), so it's deferred to the Phase-2 LLM stage (see plan Decisions).
+filler); that belongs in a future LLM stage, not a blunt rule.
 """
 
 from __future__ import annotations

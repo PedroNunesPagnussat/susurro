@@ -1,9 +1,9 @@
 """Thin hold-to-talk client: `susurro-ctl {start,stop}` -> one Unix-socket write.
 
 Bound to a Hyprland key: `bind` (press) -> `start`, `bindr` (release) -> `stop`
-(see README for the snippet). Deliberately stdlib-only and tiny — no argparse, no
-numpy, no engine — so process startup stays cheap; the daemon owns all the cost,
-and release->text latency stays inference-bound.
+(see README). Deliberately stdlib-only and tiny (no numpy, no engine) so a fresh
+process per key press stays cheap; the daemon owns all the cost, and release->text
+latency stays inference-bound.
 
 Exit codes: 0 sent, 1 daemon not running, 2 bad usage.
 """

@@ -1,7 +1,7 @@
 [project]
 name = "susurro"
 version = "0.1.0"
-description = "Local, fully-offline voice dictation for Linux/Wayland (Phase 1 smoke harness)"
+description = "Local, fully-offline voice dictation for Linux/Wayland/Hyprland"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [

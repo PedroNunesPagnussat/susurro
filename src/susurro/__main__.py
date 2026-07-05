@@ -1,9 +1,10 @@
-"""Phase-1 smoke-harness loop: capture -> transcribe -> format -> print.
+"""`susurro` — a no-daemon mic test: record a fixed window, transcribe, print.
 
-Records fixed ~3s windows (NOT push-to-talk — that's Phase 2 via Hyprland), prints
-each transcript with its warm timing, and a quiet marker on silence. Ctrl-C quits.
+Exercises capture + engine without the daemon/socket/hotkey, using the same
+`Recorder` the daemon uses. Handy for checking the mic and model in isolation;
+the real dictation app is `susurro-daemon` + `susurro-ctl`.
 
-    uv run susurro                 # default: 3s windows, GPU
+    uv run susurro                 # record 3s, transcribe, print (loops until Ctrl-C)
     uv run susurro --list-devices  # show input devices and exit
     uv run susurro --device 4      # pick an input by index or name substring
     uv run susurro --cpu           # CPU fallback
@@ -17,7 +18,7 @@ import time
 
 import numpy as np
 
-from .audio import SAMPLE_RATE, default_input_device, list_input_devices, record_window
+from .audio import SAMPLE_RATE, Recorder, list_input_devices
 from .engine import DEFAULT_MODEL, Engine
 
 
@@ -35,6 +36,12 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _record_window(recorder: Recorder, duration_s: float) -> np.ndarray:
+    recorder.start()
+    time.sleep(duration_s)
+    return recorder.stop()
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
 
@@ -50,13 +57,13 @@ def main(argv: list[str] | None = None) -> int:
     # Warm the CUDA kernels so the first real window already hits warm timing.
     engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
 
-    src = default_input_device() if args.device is None else args.device
-    print(f"ready — input: {src}. Speak; Ctrl-C to quit.", flush=True)
+    recorder = Recorder(max_duration_s=args.duration + 1.0, device=args.device)
+    print(f"ready — input: {args.device or 'default'}. Speak; Ctrl-C to quit.", flush=True)
 
     in_silence = False
     try:
         while True:
-            audio = record_window(args.duration, device=args.device)
+            audio = _record_window(recorder, args.duration)
             t0 = time.perf_counter()
             text = engine.transcribe(audio)
             dt = time.perf_counter() - t0
