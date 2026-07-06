@@ -7,6 +7,9 @@ the daemon, the mic test, and the eval harness all share one transcription path.
 
 from __future__ import annotations
 
+import gc
+from collections.abc import Callable
+
 import numpy as np
 
 from ._cuda import preload_cuda_libs
@@ -57,3 +60,43 @@ class Engine:
         )
         raw = " ".join(segment.text for segment in segments)
         return self._formatter.format(raw)
+
+
+class LazyEngine:
+    """A reloadable wrapper around `Engine`: builds the model on first use and can
+    drop it to release VRAM when idle, rebuilding lazily on the next `transcribe`.
+
+    The daemon holds one of these so an idle daemon can free GPU memory. Dropping
+    the inner `Engine` reference plus a `gc.collect()` releases the CTranslate2
+    model's CUDA allocation (CTranslate2 frees it in the C++ destructor, which runs
+    once the last Python reference goes away). The first utterance after an unload
+    pays the full model-load + CUDA-warm cost — the accepted tradeoff.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[], Engine],
+        *,
+        log: Callable[[str], None] = lambda msg: print(msg, flush=True),
+    ) -> None:
+        self._factory = factory
+        self._log = log
+        self._engine: Engine | None = None
+
+    @property
+    def loaded(self) -> bool:
+        return self._engine is not None
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        if self._engine is None:
+            self._log("susurro: loading model (cold start / post-idle) ...")
+            self._engine = self._factory()
+        return self._engine.transcribe(audio)
+
+    def unload(self) -> None:
+        """Drop the warm model and release its GPU memory. No-op if not loaded."""
+        if self._engine is None:
+            return
+        self._engine = None
+        gc.collect()  # run the CTranslate2 destructor now so VRAM frees promptly
+        self._log("susurro: model unloaded (idle) — VRAM released")

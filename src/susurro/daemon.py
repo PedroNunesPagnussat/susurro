@@ -24,17 +24,18 @@ import socket
 import sys
 import time
 from collections.abc import Callable
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from ._ipc import socket_path
 from .audio import SAMPLE_RATE, Recorder
-from .engine import DEFAULT_MODEL, Engine
+from .engine import DEFAULT_MODEL, Engine, LazyEngine
 from .inject import inject
 from .notify import Notifier, NullNotifier
 
 DEFAULT_MAX_RECORD_S = 60.0
+DEFAULT_IDLE_TIMEOUT_S = 300.0  # drop the warm model after 5 min idle to free VRAM
 
 
 class _Capturer(Protocol):
@@ -47,6 +48,20 @@ class _Capturer(Protocol):
 class _Transcriber(Protocol):
     """Structural type for the engine seam (real: `engine.Engine`)."""
 
+    def transcribe(self, audio: np.ndarray) -> str: ...
+
+
+@runtime_checkable
+class _ManagedEngine(Protocol):
+    """A `_Transcriber` that can also be unloaded/reloaded (real: `engine.LazyEngine`).
+
+    Runtime-checkable so the daemon can detect at construction whether idle-unload
+    is even possible: a plain engine without this capability just disables it.
+    """
+
+    @property
+    def loaded(self) -> bool: ...
+    def unload(self) -> None: ...
     def transcribe(self, audio: np.ndarray) -> str: ...
 
 
@@ -73,6 +88,7 @@ class Daemon:
         *,
         notify: _Notifier | None = None,
         max_record_s: float = DEFAULT_MAX_RECORD_S,
+        idle_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
         log: Callable[[str], None] = lambda msg: print(msg, flush=True),
     ) -> None:
@@ -81,10 +97,13 @@ class Daemon:
         self._inject = inject
         self._notify = notify or NullNotifier()
         self._max_record_s = max_record_s
+        # Idle-unload needs a managed (unloadable) engine; disable it otherwise.
+        self._idle_timeout_s = idle_timeout_s if isinstance(engine, _ManagedEngine) else None
         self._clock = clock
         self._log = log
         self._recording = False
         self._start_t = 0.0
+        self._last_use = clock()  # for the idle-unload timer
 
     @property
     def recording(self) -> bool:
@@ -104,6 +123,7 @@ class Daemon:
         self._recorder.start()
         self._recording = True
         self._start_t = self._clock()
+        self._last_use = self._start_t  # activity: reset the idle-unload timer
         self._notify.recording()  # persistent "armed" toast until stop replaces it
 
     def stop(self) -> str:
@@ -116,6 +136,7 @@ class Daemon:
         # Flip to idle *before* the fallible work so a recorder/engine error can't
         # leave us stuck "recording" — a failed utterance still returns to idle.
         self._recording = False
+        self._last_use = self._clock()  # activity: restart the idle-unload countdown
         text = ""
         try:
             audio = self._recorder.stop()
@@ -143,6 +164,32 @@ class Daemon:
             self._log(f"safety auto-stop after {self._max_record_s:.0f}s (missed release?)")
             return self.stop()
         return None
+
+    def idle_remaining(self) -> float | None:
+        """Seconds until the idle-unload fires, or None when it can't/shouldn't —
+        idle-unload disabled, currently recording, or the model already unloaded.
+        `serve()` folds this into its accept() timeout so it wakes in time to drop
+        the model."""
+        if self._idle_timeout_s is None or self._recording:
+            return None
+        if not self._engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
+            return None
+        return max(0.0, self._idle_timeout_s - (self._clock() - self._last_use))
+
+    def check_idle(self) -> bool:
+        """Drop the warm model if it's been idle past the timeout, freeing VRAM.
+        Returns True iff it unloaded. No-op while recording, when disabled, or when
+        the model is already unloaded."""
+        if self._idle_timeout_s is None or self._recording:
+            return False
+        engine = self._engine
+        if not engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
+            return False
+        if self._clock() - self._last_use >= self._idle_timeout_s:
+            self._log(f"idle {self._idle_timeout_s:.0f}s — unloading model to free VRAM")
+            engine.unload()  # type: ignore[attr-defined]  # guarded: managed engine
+            return True
+        return False
 
     def abort(self) -> None:
         """Drop any in-progress capture without transcribing (shutdown path)."""
@@ -180,15 +227,17 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     print(f"susurro daemon: listening on {sock_path}", flush=True)
     try:
         while True:
-            rem = daemon.remaining()
-            # None -> block until a command; else wake by the auto-stop deadline.
-            # Floor a tiny positive value so accept() stays in timeout mode (0.0
-            # would flip the socket to non-blocking and busy-spin).
-            srv.settimeout(None if rem is None else max(rem, 0.05))
+            # Wake by the nearest of two deadlines: the recording auto-stop and the
+            # idle-unload. Either may be None (not armed); None -> block until a
+            # command. Floor a tiny positive value so accept() stays in timeout mode
+            # (0.0 would flip the socket to non-blocking and busy-spin).
+            deadlines = [d for d in (daemon.remaining(), daemon.idle_remaining()) if d is not None]
+            srv.settimeout(None if not deadlines else max(min(deadlines), 0.05))
             try:
                 conn, _ = srv.accept()
             except TimeoutError:
                 daemon.check_timeout()  # safety window elapsed with no stop
+                daemon.check_idle()  # idle window elapsed -> free VRAM
                 continue
             with conn:
                 cmd = conn.recv(64).decode(errors="replace").strip()
@@ -219,6 +268,12 @@ def _build_parser() -> argparse.ArgumentParser:
         help="safety auto-stop after this many seconds",
     )
     p.add_argument(
+        "--idle-timeout",
+        type=float,
+        default=DEFAULT_IDLE_TIMEOUT_S,
+        help="unload the model to free VRAM after this many idle seconds (<=0 disables)",
+    )
+    p.add_argument(
         "--no-notify",
         action="store_true",
         help="disable the recording/done desktop notifications",
@@ -233,16 +288,30 @@ def main(argv: list[str] | None = None) -> int:
         device_arg = int(device_arg)
 
     device = "cpu" if args.cpu else "cuda"
+    idle_timeout = args.idle_timeout if args.idle_timeout > 0 else None
+
     print(f"susurro daemon: loading {args.model} on {device} ...", flush=True)
-    engine = Engine(args.model, device=device)
-    # Warm the CUDA kernels so the first real utterance already hits warm timing.
+    # LazyEngine so an idle daemon can drop the model and free VRAM, reloading via
+    # this factory on the next utterance.
+    engine = LazyEngine(lambda: Engine(args.model, device=device))
+    # Warm now so the first real utterance already hits warm timing (this also
+    # triggers the initial load); after an idle-unload the reload is lazy.
     engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
 
     # Give the recorder headroom over the daemon timeout so the daemon's auto-stop
     # is always the authoritative stop; the recorder cap is a pure memory backstop.
     recorder = Recorder(max_duration_s=args.max_record + 5.0, device=device_arg)
     notifier = NullNotifier() if args.no_notify else Notifier()
-    daemon = Daemon(recorder, engine, inject, notify=notifier, max_record_s=args.max_record)
+    daemon = Daemon(
+        recorder,
+        engine,
+        inject,
+        notify=notifier,
+        max_record_s=args.max_record,
+        idle_timeout_s=idle_timeout,
+    )
+    if idle_timeout:
+        print(f"susurro daemon: idle-unload after {idle_timeout:.0f}s", flush=True)
     print("susurro daemon: ready (warm).", flush=True)
     return serve(daemon)
 
