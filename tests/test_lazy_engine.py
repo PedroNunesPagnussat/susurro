@@ -15,6 +15,10 @@ class FakeInner:
     def __init__(self, text="hi"):
         self.text = text
         self.calls = 0
+        self.language = "en"  # matches Engine's default
+
+    def set_language(self, code):
+        self.language = code
 
     def transcribe(self, audio):
         self.calls += 1
@@ -75,3 +79,41 @@ def test_unload_when_already_unloaded_is_noop():
     engine = LazyEngine(factory)
     engine.unload()  # never loaded
     assert engine.loaded is False
+
+
+# --- language -------------------------------------------------------------
+
+def test_ctor_language_is_applied_on_first_load():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory, language="pt")
+    engine.transcribe(AUDIO)  # first load
+    assert builds[0].language == "pt"  # ctor language reached the fresh engine
+
+
+def test_set_language_applies_to_a_loaded_engine():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    engine.transcribe(AUDIO)  # load
+    engine.set_language("pt")
+    assert builds[0].language == "pt"
+
+
+def test_set_language_before_load_is_applied_on_first_load():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    engine.set_language("pt")  # no engine yet — just remembered
+    assert builds == []
+    engine.transcribe(AUDIO)
+    assert builds[0].language == "pt"
+
+
+def test_language_is_reapplied_after_unload_reload():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    engine.transcribe(AUDIO)
+    engine.set_language("pt")
+    engine.unload()
+
+    engine.transcribe(AUDIO)  # rebuilds a fresh engine
+    assert len(builds) == 2
+    assert builds[1].language == "pt"  # remembered language survived the reload

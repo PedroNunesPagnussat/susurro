@@ -45,6 +45,13 @@ class Engine:
         self._beam_size = beam_size
         self._vad_filter = vad_filter
 
+    def set_language(self, code: str) -> None:
+        """Switch the transcription language for subsequent `transcribe` calls.
+
+        Language is a per-`transcribe` param, not baked into the loaded model, so
+        this is a cheap live switch — no model reload."""
+        self._language = code
+
     def transcribe(self, audio: np.ndarray) -> str:
         """Transcribe one mono float32 window and return formatted text ("" if none)."""
         if audio is None or len(audio) == 0:
@@ -77,9 +84,11 @@ class LazyEngine:
         self,
         factory: Callable[[], Engine],
         *,
+        language: str = "en",
         log: Callable[[str], None] = lambda msg: print(msg, flush=True),
     ) -> None:
         self._factory = factory
+        self._language = language
         self._log = log
         self._engine: Engine | None = None
 
@@ -87,10 +96,23 @@ class LazyEngine:
     def loaded(self) -> bool:
         return self._engine is not None
 
+    def set_language(self, code: str) -> None:
+        """Remember the language and apply it to the engine if one is loaded.
+
+        The stored code is re-applied whenever the engine is (re)built, so an
+        idle-unload->reload keeps the chosen language instead of reverting to the
+        factory default."""
+        self._language = code
+        if self._engine is not None:
+            self._engine.set_language(code)
+
     def transcribe(self, audio: np.ndarray) -> str:
         if self._engine is None:
             self._log("susurro: loading model (cold start / post-idle) ...")
             self._engine = self._factory()
+            # Apply the remembered language to the fresh engine: covers both the
+            # first load (ctor arg) and every reload after an idle-unload.
+            self._engine.set_language(self._language)
         return self._engine.transcribe(audio)
 
     def unload(self) -> None:

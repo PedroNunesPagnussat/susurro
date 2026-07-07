@@ -62,8 +62,33 @@ def test_send_returns_1_when_daemon_not_running(tmp_path, monkeypatch):
     assert ctl.send("start") == 1
 
 
+def test_main_forwards_lang_with_code(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    srv, received, thread = _listen(tmp_path / "susurro.sock")
+    try:
+        rc = ctl.main(["lang", "pt"])
+        thread.join(timeout=2)
+    finally:
+        srv.close()
+    assert rc == 0
+    assert received == [b"lang pt"]
+
+
+def test_main_bare_lang_forwards_toggle(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    srv, received, thread = _listen(tmp_path / "susurro.sock")
+    try:
+        rc = ctl.main(["lang"])
+        thread.join(timeout=2)
+    finally:
+        srv.close()
+    assert rc == 0
+    assert received == [b"lang toggle"]
+
+
 def test_main_rejects_bad_usage(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     assert ctl.main([]) == 2
     assert ctl.main(["frobnicate"]) == 2
     assert ctl.main(["start", "stop"]) == 2
+    assert ctl.main(["lang", "pt", "en"]) == 2  # too many args

@@ -46,15 +46,27 @@ uv sync
 uv run susurro-daemon        # warm daemon: loads the model, listens on a Unix socket
 uv run susurro-ctl start     # begin capture   (bound to key press)
 uv run susurro-ctl stop      # end -> transcribe -> type into focused window (key release)
+uv run susurro-ctl lang      # flip English <-> Portuguese live (no restart, no reload)
 ```
 
 `susurro-daemon` flags: `--model` (default `large-v3-turbo`), `--device`, `--cpu`,
+`--lang`/`--language` (startup language code, default `en`; e.g. `--lang pt`),
 `--max-record` (safety auto-stop seconds, default 60), `--no-notify`.
+
+## Languages
+
+Language is a per-utterance parameter, so it flips live on the one warm daemon —
+no restart, no model reload. `susurro-ctl lang` toggles English↔Portuguese;
+`susurro-ctl lang pt` / `lang en` set one explicitly (any faster-whisper code
+works). The recording toast shows the active language (`🎙 Recording (pt)…`) and a
+transient `🌐 Português` toast confirms each switch. Boot straight into a language
+with `susurro-daemon --lang pt`.
 
 There's also a no-daemon mic test that exercises capture + engine directly:
 
 ```sh
 uv run susurro                 # record 3s windows, transcribe, print; Ctrl-C to quit
+uv run susurro --lang pt       # transcribe the windows as Portuguese
 uv run susurro --list-devices  # show input devices and exit
 ```
 
@@ -76,6 +88,14 @@ bindr = , Menu, exec, ~/dev/susurro/.venv/bin/susurro-ctl stop
 # or a mouse thumb button (example: 275 = back; use wev to confirm yours):
 # bind  = , mouse:275, exec, ~/dev/susurro/.venv/bin/susurro-ctl start
 # bindr = , mouse:275, exec, ~/dev/susurro/.venv/bin/susurro-ctl stop
+```
+
+Add a tap-key to flip the language live (Omarchy/Hyprland). This is a normal
+`bind` (fires on press), *not* a hold — it just toggles English↔Portuguese; the
+hold-to-talk key above is unchanged:
+
+```ini
+bind = SUPER SHIFT, D, exec, ~/dev/susurro/.venv/bin/susurro-ctl lang toggle
 ```
 
 Autostart the warm daemon with the session:

@@ -29,12 +29,19 @@ def send(cmd: str) -> int:
     return 0
 
 
+_USAGE = "usage: susurro-ctl {start|stop|lang [pt|en|toggle]}"
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) != 1 or argv[0] not in {"start", "stop"}:
-        print("usage: susurro-ctl {start|stop}", file=sys.stderr)
-        return 2
-    return send(argv[0])
+    if len(argv) == 1 and argv[0] in {"start", "stop"}:
+        return send(argv[0])
+    if argv and argv[0] == "lang" and len(argv) <= 2:
+        # bare `lang` = toggle en<->pt; `lang <code>` sets it explicitly. The
+        # daemon owns code validation (unknown codes fall back to the raw code).
+        return send(f"lang {argv[1]}" if len(argv) == 2 else "lang toggle")
+    print(_USAGE, file=sys.stderr)
+    return 2
 
 
 if __name__ == "__main__":

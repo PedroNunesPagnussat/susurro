@@ -49,6 +49,7 @@ class _Transcriber(Protocol):
     """Structural type for the engine seam (real: `engine.Engine`)."""
 
     def transcribe(self, audio: np.ndarray) -> str: ...
+    def set_language(self, code: str) -> None: ...
 
 
 @runtime_checkable
@@ -68,8 +69,14 @@ class _ManagedEngine(Protocol):
 class _Notifier(Protocol):
     """Structural type for the notification seam (real: `notify.Notifier`)."""
 
-    def recording(self) -> None: ...
+    def recording(self, language: str) -> None: ...
     def done(self, text: str) -> None: ...
+    def language(self, code: str) -> None: ...
+
+
+# Two-way language toggle (Super+Shift+D). Kept a small map so more codes can be
+# added later; an unknown current language toggles to Portuguese.
+_LANG_TOGGLE = {"en": "pt", "pt": "en"}
 
 
 class Daemon:
@@ -87,6 +94,7 @@ class Daemon:
         inject: Callable[[str], None],
         *,
         notify: _Notifier | None = None,
+        language: str = "en",
         max_record_s: float = DEFAULT_MAX_RECORD_S,
         idle_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
@@ -96,6 +104,7 @@ class Daemon:
         self._engine = engine
         self._inject = inject
         self._notify = notify or NullNotifier()
+        self._language = language
         self._max_record_s = max_record_s
         # Idle-unload needs a managed (unloadable) engine; disable it otherwise.
         self._idle_timeout_s = idle_timeout_s if isinstance(engine, _ManagedEngine) else None
@@ -108,6 +117,24 @@ class Daemon:
     @property
     def recording(self) -> bool:
         return self._recording
+
+    @property
+    def language(self) -> str:
+        return self._language
+
+    def set_language(self, code: str) -> str:
+        """Switch the transcription language and confirm it with a toast.
+
+        `code` is a language code (`en`/`pt`/…) or `"toggle"` to flip en<->pt.
+        The daemon owns the canonical language (drives the toggle + the recording
+        toast) and pushes it to the engine — no model reload. Returns the code now
+        active."""
+        if code == "toggle":
+            code = _LANG_TOGGLE.get(self._language, "pt")
+        self._language = code
+        self._engine.set_language(code)
+        self._notify.language(code)
+        return code
 
     def start(self) -> None:
         """Begin capturing. A `start` while already recording (a duplicate press,
@@ -124,7 +151,8 @@ class Daemon:
         self._recording = True
         self._start_t = self._clock()
         self._last_use = self._start_t  # activity: reset the idle-unload timer
-        self._notify.recording()  # persistent "armed" toast until stop replaces it
+        # persistent "armed" toast (shows the active language) until stop replaces it
+        self._notify.recording(self._language)
 
     def stop(self) -> str:
         """End capture, transcribe -> format -> inject, and return the emitted
@@ -202,11 +230,18 @@ class Daemon:
 
 
 def _dispatch(daemon: Daemon, cmd: str) -> None:
-    if cmd == "start":
+    parts = cmd.split()
+    if not parts:
+        return
+    verb = parts[0]
+    if verb == "start":
         daemon.start()
-    elif cmd == "stop":
+    elif verb == "stop":
         daemon.stop()
-    elif cmd:
+    elif verb == "lang":
+        # `lang <code>` sets it explicitly; bare `lang` flips en<->pt.
+        daemon.set_language(parts[1] if len(parts) > 1 else "toggle")
+    else:
         print(f"susurro: unknown command {cmd!r}", file=sys.stderr, flush=True)
 
 
@@ -262,6 +297,13 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", default=None, help="input device index or name")
     p.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
     p.add_argument(
+        "--lang",
+        "--language",
+        dest="lang",
+        default="en",
+        help="startup transcription language code (e.g. en, pt); live-switch with susurro-ctl lang",
+    )
+    p.add_argument(
         "--max-record",
         type=float,
         default=DEFAULT_MAX_RECORD_S,
@@ -293,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"susurro daemon: loading {args.model} on {device} ...", flush=True)
     # LazyEngine so an idle daemon can drop the model and free VRAM, reloading via
     # this factory on the next utterance.
-    engine = LazyEngine(lambda: Engine(args.model, device=device))
+    engine = LazyEngine(lambda: Engine(args.model, device=device), language=args.lang)
     # Warm now so the first real utterance already hits warm timing (this also
     # triggers the initial load); after an idle-unload the reload is lazy.
     engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
@@ -307,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         engine,
         inject,
         notify=notifier,
+        language=args.lang,
         max_record_s=args.max_record,
         idle_timeout_s=idle_timeout,
     )

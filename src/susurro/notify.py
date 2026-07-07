@@ -25,6 +25,8 @@ _APP = "susurro"
 # Generous: notify-send should return at once; this only kills a stuck spawn so
 # it can't wedge the accept loop. Not a latency knob.
 _TIMEOUT_S = 5.0
+# Friendly display names for the language toasts; unknown codes show the raw code.
+_LANG_NAMES = {"en": "English", "pt": "Português"}
 
 
 def _send(*args: str) -> None:
@@ -44,10 +46,11 @@ def _send(*args: str) -> None:
 class Notifier:
     """Default notifier: a persistent recording toast, replaced by the transcript."""
 
-    def recording(self) -> None:
+    def recording(self, language: str) -> None:
         # -t 0 = never expire: it stays up for the whole hold as the armed
-        # indicator, until `done()` replaces it via the shared sync hint.
-        _send("-t", "0", "-u", "low", "🎙 Recording…")
+        # indicator, until `done()` replaces it via the shared sync hint. Shows
+        # the active language so you can see what it'll transcribe as.
+        _send("-t", "0", "-u", "low", f"🎙 Recording ({language})…")
 
     def done(self, text: str) -> None:
         # Replaces the persistent toast and fades on its own. Called on *every*
@@ -55,9 +58,16 @@ class Notifier:
         body = text.strip() or "(no speech)"
         _send("-t", "4000", "-u", "low", "✓ Done", body)
 
+    def language(self, code: str) -> None:
+        # Transient confirmation of a live language switch. Shares the sync slot,
+        # so it's a quick standalone toast (you switch while not recording).
+        name = _LANG_NAMES.get(code, code)
+        _send("-t", "2000", "-u", "low", f"🌐 Susurro: Transcribing to {name}")
+
 
 class NullNotifier:
     """No-op notifier for `--no-notify` and the daemon's default (opt-in toasts)."""
 
-    def recording(self) -> None: ...
+    def recording(self, language: str) -> None: ...
     def done(self, text: str) -> None: ...
+    def language(self, code: str) -> None: ...

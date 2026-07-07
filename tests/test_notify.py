@@ -20,13 +20,34 @@ def _cmd(run):
 
 def test_recording_toast_is_persistent_and_tagged():
     with mock.patch("susurro.notify.subprocess.run") as run:
-        Notifier().recording()
+        Notifier().recording("en")
     cmd = _cmd(run)
     assert cmd[0] == "notify-send"
-    assert cmd[-1] == "🎙 Recording…"
+    assert cmd[-1] == "🎙 Recording (en)…"  # shows the active language
     assert ["-t", "0"] == cmd[cmd.index("-t") : cmd.index("-t") + 2]  # never expires
     assert "-a" in cmd and "susurro" in cmd
     assert "string:x-canonical-private-synchronous:susurro" in cmd  # shared slot
+
+
+def test_recording_toast_shows_the_given_language():
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().recording("pt")
+    assert _cmd(run)[-1] == "🎙 Recording (pt)…"
+
+
+def test_language_toast_uses_friendly_name_and_fades():
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().language("pt")
+    cmd = _cmd(run)
+    assert cmd[-1] == "🌐 Susurro: Transcribing to Português"  # friendly display name
+    assert cmd[cmd.index("-t") + 1] != "0"  # transient -> fades on its own
+    assert "string:x-canonical-private-synchronous:susurro" in cmd
+
+
+def test_language_toast_falls_back_to_raw_code():
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().language("fr")  # no friendly name mapped
+    assert _cmd(run)[-1] == "🌐 Susurro: Transcribing to fr"
 
 
 def test_done_toast_shows_transcript_and_fades():
@@ -46,7 +67,7 @@ def test_done_falls_back_when_transcript_empty():
 
 def test_missing_notify_send_is_swallowed(capsys):
     with mock.patch("susurro.notify.subprocess.run", side_effect=FileNotFoundError):
-        Notifier().recording()  # must not raise
+        Notifier().recording("en")  # must not raise
     assert "notify-send failed" in capsys.readouterr().err
 
 
@@ -61,6 +82,7 @@ def test_hung_notify_send_is_swallowed(capsys):
 
 def test_null_notifier_is_silent():
     with mock.patch("susurro.notify.subprocess.run") as run:
-        NullNotifier().recording()
+        NullNotifier().recording("en")
         NullNotifier().done("hi")
+        NullNotifier().language("pt")
     run.assert_not_called()

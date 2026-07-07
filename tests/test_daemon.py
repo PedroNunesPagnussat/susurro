@@ -9,7 +9,7 @@ or wall-clock time.
 import numpy as np
 import pytest
 
-from susurro.daemon import Daemon
+from susurro.daemon import Daemon, _dispatch
 
 
 class FakeRecorder:
@@ -39,6 +39,10 @@ class FakeEngine:
     def __init__(self, text="hello world"):
         self.text = text
         self.calls = []
+        self.language = "en"
+
+    def set_language(self, code):
+        self.language = code
 
     def transcribe(self, audio):
         self.calls.append(audio)
@@ -55,12 +59,16 @@ class FakeManagedEngine:
     def __init__(self, text="hello world"):
         self.text = text
         self.calls = []
+        self.language = "en"
         self._loaded = True  # warmed at startup, like the real daemon
         self.unloads = 0
 
     @property
     def loaded(self):
         return self._loaded
+
+    def set_language(self, code):
+        self.language = code
 
     def unload(self):
         self._loaded = False
@@ -84,20 +92,26 @@ class FakeClock:
 
 
 class SpyNotifier:
-    """Stand-in for `notify.Notifier`: records the (state, text) sequence so tests
-    can assert the recording toast is raised on start and always cleared on stop."""
+    """Stand-in for `notify.Notifier`: records the (state, arg) sequence so tests
+    can assert the recording toast is raised on start (with the active language)
+    and always cleared on stop, and the language toast fires on a switch."""
 
     def __init__(self):
-        self.events = []  # ("recording",) / ("done", text)
+        self.events = []  # ("recording", lang) / ("done", text) / ("language", code)
 
-    def recording(self):
-        self.events.append(("recording",))
+    def recording(self, language):
+        self.events.append(("recording", language))
 
     def done(self, text):
         self.events.append(("done", text))
 
+    def language(self, code):
+        self.events.append(("language", code))
 
-def _make(recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeout_s=None):
+
+def _make(
+    recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeout_s=None, language="en"
+):
     recorder = recorder or FakeRecorder()
     engine = engine or FakeEngine()
     injected: list[str] = []
@@ -106,6 +120,7 @@ def _make(recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeou
         engine,
         injected.append,
         notify=SpyNotifier(),
+        language=language,
         max_record_s=max_record_s,
         idle_timeout_s=idle_timeout_s,
         clock=clock or FakeClock(),
@@ -329,14 +344,14 @@ def test_plain_engine_never_unloads():
 def test_start_raises_recording_toast():
     daemon, _recorder, _engine, _injected = _make()
     daemon.start()
-    assert daemon._notify.events == [("recording",)]
+    assert daemon._notify.events == [("recording", "en")]
 
 
 def test_stop_clears_toast_with_transcript():
     daemon, _recorder, _engine, _injected = _make()
     daemon.start()
     daemon.stop()
-    assert daemon._notify.events == [("recording",), ("done", "hello world")]
+    assert daemon._notify.events == [("recording", "en"), ("done", "hello world")]
 
 
 def test_stop_without_start_does_not_notify():
@@ -351,7 +366,7 @@ def test_auto_stop_clears_toast():
     daemon.start()
     clock.advance(30.0)
     daemon.check_timeout()
-    assert daemon._notify.events == [("recording",), ("done", "hello world")]
+    assert daemon._notify.events == [("recording", "en"), ("done", "hello world")]
 
 
 def test_toast_is_cleared_even_if_engine_raises():
@@ -364,4 +379,61 @@ def test_toast_is_cleared_even_if_engine_raises():
     with pytest.raises(RuntimeError, match="boom"):
         daemon.stop()
     # the persistent -t 0 toast must still be replaced on failure, else it hangs
-    assert daemon._notify.events == [("recording",), ("done", "")]
+    assert daemon._notify.events == [("recording", "en"), ("done", "")]
+
+
+# --- language --------------------------------------------------------------
+
+def test_set_language_updates_engine_and_posts_toast():
+    daemon, _recorder, engine, _injected = _make()
+    active = daemon.set_language("pt")
+    assert active == "pt"
+    assert daemon.language == "pt"
+    assert engine.language == "pt"  # pushed to the engine, no reload
+    assert daemon._notify.events == [("language", "pt")]
+
+
+def test_toggle_flips_en_and_pt():
+    daemon, _recorder, engine, _injected = _make(language="en")
+    assert daemon.set_language("toggle") == "pt"
+    assert engine.language == "pt"
+    assert daemon.set_language("toggle") == "en"  # flips back
+    assert engine.language == "en"
+    assert daemon._notify.events == [("language", "pt"), ("language", "en")]
+
+
+def test_start_uses_the_active_language_in_recording_toast():
+    daemon, _recorder, _engine, _injected = _make(language="en")
+    daemon.set_language("pt")
+    daemon.start()
+    assert daemon._notify.events == [("language", "pt"), ("recording", "pt")]
+
+
+def test_daemon_boots_into_the_given_language():
+    daemon, _recorder, _engine, _injected = _make(language="pt")
+    daemon.start()
+    assert daemon._notify.events == [("recording", "pt")]
+
+
+# --- dispatch --------------------------------------------------------------
+
+def test_dispatch_lang_with_code_sets_explicit():
+    daemon, _recorder, engine, _injected = _make(language="en")
+    _dispatch(daemon, "lang pt")
+    assert daemon.language == "pt"
+    assert engine.language == "pt"
+
+
+def test_dispatch_bare_lang_toggles():
+    daemon, _recorder, _engine, _injected = _make(language="en")
+    _dispatch(daemon, "lang")
+    assert daemon.language == "pt"
+
+
+def test_dispatch_start_and_stop_still_route():
+    daemon, recorder, _engine, injected = _make()
+    _dispatch(daemon, "start")
+    assert daemon.recording is True
+    _dispatch(daemon, "stop")
+    assert daemon.recording is False
+    assert recorder.stops == 1

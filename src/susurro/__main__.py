@@ -32,6 +32,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--device", type=_parse_device, default=None, help="input device index or name")
     p.add_argument("--model", default=DEFAULT_MODEL, help="faster-whisper model name")
     p.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
+    p.add_argument(
+        "--lang", "--language", dest="lang", default="en", help="transcription language code (e.g. en, pt)"
+    )
     p.add_argument("--list-devices", action="store_true", help="list input devices and exit")
     return p
 
@@ -51,8 +54,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     device = "cpu" if args.cpu else "cuda"
-    print(f"loading {args.model} on {device} ...", flush=True)
-    engine = Engine(args.model, device=device)
+    print(f"loading {args.model} on {device} ({args.lang}) ...", flush=True)
+    engine = Engine(args.model, device=device, language=args.lang)
 
     # Warm the CUDA kernels so the first real window already hits warm timing.
     engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
