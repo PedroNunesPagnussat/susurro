@@ -81,6 +81,41 @@ def test_unload_when_already_unloaded_is_noop():
     assert engine.loaded is False
 
 
+# --- load (build-only preload) --------------------------------------------
+
+def test_load_builds_inner_engine_once():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    assert engine.loaded is False
+
+    engine.load()
+    assert engine.loaded is True
+    assert len(builds) == 1  # built exactly once
+
+
+def test_load_when_already_loaded_is_noop():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    engine.load()
+    engine.load()  # already built — must not rebuild
+    assert len(builds) == 1
+
+
+def test_load_applies_remembered_language_to_fresh_engine():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory, language="pt")
+    engine.load()
+    assert builds[0].language == "pt"  # remembered language reached the fresh engine
+
+
+def test_load_then_transcribe_does_not_rebuild():
+    factory, builds = _factory_spy()
+    engine = LazyEngine(factory)
+    engine.load()
+    assert engine.transcribe(AUDIO) == "hi"  # reuses the preloaded engine
+    assert len(builds) == 1  # no second build on transcribe
+
+
 # --- language -------------------------------------------------------------
 
 def test_ctor_language_is_applied_on_first_load():

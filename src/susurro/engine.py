@@ -76,8 +76,9 @@ class LazyEngine:
     The daemon holds one of these so an idle daemon can free GPU memory. Dropping
     the inner `Engine` reference plus a `gc.collect()` releases the CTranslate2
     model's CUDA allocation (CTranslate2 frees it in the C++ destructor, which runs
-    once the last Python reference goes away). The first utterance after an unload
-    pays the full model-load + CUDA-warm cost — the accepted tradeoff.
+    once the last Python reference goes away). After an unload the daemon preloads
+    on the key-press (`load()`), so the model build overlaps the hold; only the
+    small first-inference CUDA warm lands on the release transcribe.
     """
 
     def __init__(
@@ -106,13 +107,22 @@ class LazyEngine:
         if self._engine is not None:
             self._engine.set_language(code)
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def load(self) -> None:
+        """Build the inner engine now, without transcribing. No-op if loaded.
+
+        The daemon calls this on the key-*press* so a post-idle model build
+        overlaps the user speaking, instead of the whole cost landing on the
+        release transcribe. The remembered language is applied to the fresh
+        engine, exactly as a lazy (transcribe-triggered) build does."""
         if self._engine is None:
             self._log("susurro: loading model (cold start / post-idle) ...")
             self._engine = self._factory()
             # Apply the remembered language to the fresh engine: covers both the
             # first load (ctor arg) and every reload after an idle-unload.
             self._engine.set_language(self._language)
+
+    def transcribe(self, audio: np.ndarray) -> str:
+        self.load()  # cold-start / post-idle build; no-op when already warm
         return self._engine.transcribe(audio)
 
     def unload(self) -> None:
