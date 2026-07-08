@@ -29,7 +29,7 @@ _TIMEOUT_S = 5.0
 _LANG_NAMES = {"en": "English", "pt": "Português"}
 
 
-def _send(*args: str) -> None:
+def _send(*args: str, timeout: float = _TIMEOUT_S) -> None:
     """Fire notify-send, swallowing every failure onto stderr. A missing binary,
     a non-zero return, or a hung spawn must never reach the daemon loop."""
     try:
@@ -37,32 +37,42 @@ def _send(*args: str) -> None:
             ["notify-send", "-a", _APP, "-h", _SYNC_HINT, *args],
             capture_output=True,
             text=True,
-            timeout=_TIMEOUT_S,
+            timeout=timeout,
         )
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"susurro: notify-send failed: {exc}", file=sys.stderr, flush=True)
 
 
 class Notifier:
-    """Default notifier: a persistent recording toast, replaced by the transcript."""
+    """Default notifier: a persistent recording toast, replaced by the transcript.
+
+    `timeout_s` caps the `notify-send` spawn (a hung one can't wedge the daemon's
+    single-threaded loop); it comes from `[notify] timeout_s` in the config.
+    """
+
+    def __init__(self, timeout_s: float = _TIMEOUT_S) -> None:
+        self._timeout_s = timeout_s
 
     def recording(self, language: str) -> None:
         # -t 0 = never expire: it stays up for the whole hold as the armed
         # indicator, until `done()` replaces it via the shared sync hint. Shows
         # the active language so you can see what it'll transcribe as.
-        _send("-t", "0", "-u", "low", f"🎙 Recording ({language})…")
+        _send("-t", "0", "-u", "low", f"🎙 Recording ({language})…", timeout=self._timeout_s)
 
     def done(self, text: str) -> None:
         # Replaces the persistent toast and fades on its own. Called on *every*
         # stop (even empty/failed), else the -t 0 toast would hang on screen.
         body = text.strip() or "(no speech)"
-        _send("-t", "4000", "-u", "low", "✓ Done", body)
+        _send("-t", "4000", "-u", "low", "✓ Done", body, timeout=self._timeout_s)
 
     def language(self, code: str) -> None:
         # Transient confirmation of a live language switch. Shares the sync slot,
         # so it's a quick standalone toast (you switch while not recording).
         name = _LANG_NAMES.get(code, code)
-        _send("-t", "2000", "-u", "low", f"🌐 Susurro: Transcribing to {name}")
+        _send(
+            "-t", "2000", "-u", "low", f"🌐 Susurro: Transcribing to {name}",
+            timeout=self._timeout_s,
+        )
 
 
 class NullNotifier:

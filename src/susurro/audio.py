@@ -77,10 +77,12 @@ class Recorder:
         self,
         max_duration_s: float = 30.0,
         samplerate: int = SAMPLE_RATE,
+        channels: int = CHANNELS,
         device: int | str | None = None,
     ) -> None:
         self.max_duration_s = max_duration_s
         self.samplerate = samplerate
+        self.channels = channels
         self.device = device
         self._stream = None  # active sd.InputStream while recording, else None
 
@@ -103,7 +105,7 @@ class Recorder:
         try:
             stream = sd.InputStream(
                 samplerate=self.samplerate,
-                channels=CHANNELS,
+                channels=self.channels,
                 dtype=DTYPE,
                 device=self.device,
                 callback=_callback,

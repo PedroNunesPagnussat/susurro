@@ -80,6 +80,18 @@ def test_hung_notify_send_is_swallowed(capsys):
     assert "notify-send failed" in capsys.readouterr().err
 
 
+def test_notifier_forwards_configured_subprocess_timeout():
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier(timeout_s=12.0).recording("en")
+    assert run.call_args.kwargs["timeout"] == 12.0
+
+
+def test_notifier_defaults_subprocess_timeout():
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().done("hi")
+    assert run.call_args.kwargs["timeout"] == 5.0
+
+
 def test_null_notifier_is_silent():
     with mock.patch("susurro.notify.subprocess.run") as run:
         NullNotifier().recording("en")

@@ -84,6 +84,36 @@ def test_recorder_stop_without_start_raises():
         Recorder().stop()
 
 
+def _fake_sounddevice(monkeypatch):
+    """Inject a fake `sounddevice` so Recorder.start() opens no real PortAudio
+    stream; returns the stubbed `InputStream` to inspect the kwargs it was given."""
+    import sys
+    import types
+    from unittest import mock
+
+    fake = types.SimpleNamespace()
+    fake.PortAudioError = type("PortAudioError", (Exception,), {})
+    fake.InputStream = mock.Mock(return_value=mock.Mock())
+    monkeypatch.setitem(sys.modules, "sounddevice", fake)
+    return fake.InputStream
+
+
+def test_recorder_opens_stream_with_configured_channels_and_rate(monkeypatch):
+    InputStream = _fake_sounddevice(monkeypatch)
+    Recorder(samplerate=48_000, channels=2).start()
+    kwargs = InputStream.call_args.kwargs
+    assert kwargs["channels"] == 2
+    assert kwargs["samplerate"] == 48_000
+
+
+def test_recorder_defaults_to_mono_16k(monkeypatch):
+    InputStream = _fake_sounddevice(monkeypatch)
+    Recorder().start()
+    kwargs = InputStream.call_args.kwargs
+    assert kwargs["channels"] == 1
+    assert kwargs["samplerate"] == SAMPLE_RATE
+
+
 # --- load_wav --------------------------------------------------------------
 
 def test_load_wav_returns_mono_float32_in_unit_range():

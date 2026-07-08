@@ -49,9 +49,11 @@ uv run susurro-ctl stop      # end -> transcribe -> type into focused window (ke
 uv run susurro-ctl lang      # flip English <-> Portuguese live (no restart, no reload)
 ```
 
-`susurro-daemon` flags: `--model` (default `large-v3-turbo`), `--device`, `--cpu`,
-`--lang`/`--language` (startup language code, default `en`; e.g. `--lang pt`),
-`--max-record` (safety auto-stop seconds, default 60), `--no-notify`.
+`susurro-daemon` flags: `--config` (path to a config file), `--model`, `--device`, `--cpu`,
+`--lang`/`--language` (startup language code, e.g. `--lang pt`), `--max-record` (safety
+auto-stop seconds), `--idle-timeout` (VRAM-unload idle seconds; `<=0` disables),
+`--no-notify`. Every default lives in the config file (see **Configuration**); a flag
+only overrides what the file (or the built-in default) set.
 
 ## Languages
 
@@ -69,6 +71,76 @@ uv run susurro                 # record 3s windows, transcribe, print; Ctrl-C to
 uv run susurro --lang pt       # transcribe the windows as Portuguese
 uv run susurro --list-devices  # show input devices and exit
 ```
+
+## Configuration
+
+All tunables (model, compute type, device, language, beam size, VAD, sample rate,
+input device, safety timeout, idle-unload, notifications, notify-send backstop) live
+in one optional TOML file, **`config.toml` at the repo root** (resolved relative to
+the package, so it's found no matter where the daemon is launched from). Precedence is
+**built-in defaults < config file < CLI flags** — the file changes the defaults; a
+flag still wins over it.
+
+The file is optional and hand-edited: edit the repo's `config.toml` (it's
+`.gitignore`d — personal, not pushed) and set only the keys you want to change
+(everything else keeps its built-in default). Point the daemon at a different file
+with `--config PATH`. A minimal example:
+
+```toml
+[engine]
+model = "large-v3-turbo"
+language = "pt"        # boot into Portuguese
+beam_size = 5
+
+[daemon]
+max_record_s = 60.0
+idle_timeout_s = 300.0  # <= 0 keeps the model resident (no idle-unload)
+```
+
+A missing config file is fine (all defaults). A file that exists but is malformed, or
+has an invalid value (wrong type / out of range / bad enum), makes susurro **exit with
+an error at startup** rather than silently running on a default; unknown keys are
+ignored with a warning. There's deliberately no "max window" knob: the capture cap is
+derived per caller (daemon `max_record_s` + headroom; the `susurro` mic test
+`--duration` + headroom).
+
+### Parameter reference
+
+Delete a line → falls back to the built-in default; a CLI flag still overrides the
+file; a bad type / range / enum makes startup fail loud (exit 1); an unknown key only warns.
+
+**`[engine]`**
+
+| Key | Allowed | What it does |
+|---|---|---|
+| `model` | free string: `tiny`, `base`, `small`, `medium`, `large-v1/v2/v3`, `large-v3-turbo`, `distil-*`, or a path / HF id (add `.en` for English-only) | • Which Whisper model to load<br>• Bigger = more accurate, slower, more VRAM<br>• `large-v3-turbo` = near-large accuracy, much faster |
+| `compute_type` | free string; valid set depends on device. **CUDA:** `float16`, `int8_float16`, `int8`, `bfloat16`, `float32`. **CPU:** `int8`, `int16`, `float32` | • Numeric precision of the model<br>• `int8` = smallest/fastest, slight accuracy loss<br>• `float16` = GPU accuracy/speed sweet spot<br>• `float32` = full precision, slowest + most memory<br>• `int8_float16` = mixed (int8 weights, fp16 compute) |
+| `device` | enum: `"cuda"` \| `"cpu"` (validated) | • `cuda` = GPU, `cpu` = CPU<br>• CPU works but is much slower |
+| `language` | ISO 639-1 2-letter code: `"en"`, `"pt"`, `"es"`, … (~99 supported) | • Forces transcription language (skips auto-detect)<br>• What the live En↔Pt toggle flips |
+| `beam_size` | positive int (`>0`) | • Beam search width<br>• Higher = marginally better accuracy, slower<br>• `5` = standard default; `1` = greedy/fastest |
+| `vad_filter` | bool: `true` \| `false` | • Strips silence before transcribing (voice-activity detection)<br>• `true` avoids hallucinated text in silent gaps |
+
+**`[audio]`**
+
+| Key | Allowed | What it does |
+|---|---|---|
+| `sample_rate` | positive int | • Capture rate in Hz<br>• **Keep `16000`** — Whisper is trained on 16 kHz; other values get resampled and hurt quality |
+| `channels` | positive int | • `1` = mono (what you want for speech) |
+| `device` | int index **or** string name-substring; omit for system default | • Which input mic<br>• Integer = device index; string = matches device name |
+
+**`[daemon]`**
+
+| Key | Allowed | What it does |
+|---|---|---|
+| `max_record_s` | positive float (`>0`) | • Hard cap on one recording, in seconds<br>• Auto-stops so a forgotten session can't run forever |
+| `idle_timeout_s` | any number; `<= 0` disables | • Unload the model from VRAM after this many idle seconds<br>• `<=0` keeps it resident (faster next use, holds VRAM) |
+| `notify` | bool: `true` \| `false` | • Whether the daemon sends desktop notifications (recording start/stop, etc.) |
+
+**`[notify]`**
+
+| Key | Allowed | What it does |
+|---|---|---|
+| `timeout_s` | positive float (`>0`) | • Backstop timeout on the `notify-send` subprocess call (so a hung notifier can't block)<br>• Not how long the popup is shown |
 
 ## Hyprland trigger
 
@@ -139,6 +211,7 @@ src/susurro/
   audio.py        # sounddevice capture (Recorder) + load_wav for offline/eval
   engine.py       # UI-agnostic Engine: audio -> transcript (warm model)
   formatter.py    # pure rule-based cleanup (unit-tested)
+  config.py       # single-source config: load config.toml -> Config (CLI overrides)
   _cuda.py        # preload the venv's cuBLAS/cuDNN for CTranslate2
   daemon.py       # warm daemon + idle<->recording state machine (Unix socket)
   ctl.py          # thin hold-to-talk client (susurro-ctl start|stop)
@@ -146,9 +219,10 @@ src/susurro/
   notify.py       # recording/done desktop toasts via notify-send
   _ipc.py         # shared socket path (stdlib-only; keeps the client light)
   __main__.py     # no-daemon mic test (susurro)
+config.toml       # repo-local tunables (optional, .gitignore'd; --config to relocate)
 tests/
   test_formatter.py  test_audio.py  test_daemon.py  test_ctl.py
-  test_inject.py     test_notify.py
+  test_inject.py     test_notify.py  test_config.py  test_main.py
   test_engine.py     # skipped when no CUDA/model
   fixtures/
 ```

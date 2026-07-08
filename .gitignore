@@ -9,3 +9,6 @@ __pycache__/
 
 # Models cache (downloaded at runtime, not committed)
 models/
+
+# Local, personal config (lives in the repo for now, but not pushed)
+/config.toml

@@ -24,18 +24,19 @@ import socket
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Protocol, runtime_checkable
 
 import numpy as np
 
 from ._ipc import socket_path
-from .audio import SAMPLE_RATE, Recorder
-from .engine import DEFAULT_MODEL, Engine, LazyEngine
+from .audio import Recorder
+from .config import Config, ConfigError, load_config, pick
+from .engine import Engine, LazyEngine
 from .inject import inject
 from .notify import Notifier, NullNotifier
 
 DEFAULT_MAX_RECORD_S = 60.0
-DEFAULT_IDLE_TIMEOUT_S = 300.0  # drop the warm model after 5 min idle to free VRAM
 
 
 class _Capturer(Protocol):
@@ -291,28 +292,36 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     return 0
 
 
+def _parse_device(value: str) -> int | str:
+    """A numeric `--device` is a PortAudio index; anything else is a name substring."""
+    return int(value) if value.isdigit() else value
+
+
 def _build_parser() -> argparse.ArgumentParser:
+    # Flag defaults are None ("not passed") so `_apply_cli` only overrides the config
+    # value when a flag is actually given: built-in defaults < config file < CLI flag.
     p = argparse.ArgumentParser(prog="susurro-daemon", description=__doc__)
-    p.add_argument("--model", default=DEFAULT_MODEL, help="faster-whisper model name")
-    p.add_argument("--device", default=None, help="input device index or name")
+    p.add_argument("--config", default=None, help="path to config.toml (default: the repo-local config.toml)")
+    p.add_argument("--model", default=None, help="faster-whisper model name")
+    p.add_argument("--device", type=_parse_device, default=None, help="input device index or name")
     p.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
     p.add_argument(
         "--lang",
         "--language",
         dest="lang",
-        default="en",
+        default=None,
         help="startup transcription language code (e.g. en, pt); live-switch with susurro-ctl lang",
     )
     p.add_argument(
         "--max-record",
         type=float,
-        default=DEFAULT_MAX_RECORD_S,
+        default=None,
         help="safety auto-stop after this many seconds",
     )
     p.add_argument(
         "--idle-timeout",
         type=float,
-        default=DEFAULT_IDLE_TIMEOUT_S,
+        default=None,
         help="unload the model to free VRAM after this many idle seconds (<=0 disables)",
     )
     p.add_argument(
@@ -323,34 +332,73 @@ def _build_parser() -> argparse.ArgumentParser:
     return p
 
 
+def _apply_cli(config: Config, args: argparse.Namespace) -> Config:
+    """Layer CLI flags over the loaded config (defaults < file < flag).
+
+    `--cpu` and `--no-notify` are force-off switches (there's no matching on flag),
+    so they override the config only in the off direction."""
+    engine = replace(
+        config.engine,
+        model=pick(args.model, config.engine.model),
+        device="cpu" if args.cpu else config.engine.device,
+        language=pick(args.lang, config.engine.language),
+    )
+    audio = replace(config.audio, device=pick(args.device, config.audio.device))
+    daemon = replace(
+        config.daemon,
+        max_record_s=pick(args.max_record, config.daemon.max_record_s),
+        idle_timeout_s=pick(args.idle_timeout, config.daemon.idle_timeout_s),
+        notify=config.daemon.notify and not args.no_notify,
+    )
+    return replace(config, engine=engine, audio=audio, daemon=daemon)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
-    device_arg = args.device
-    if isinstance(device_arg, str) and device_arg.isdigit():
-        device_arg = int(device_arg)
 
-    device = "cpu" if args.cpu else "cuda"
-    idle_timeout = args.idle_timeout if args.idle_timeout > 0 else None
+    try:
+        config = _apply_cli(load_config(args.config), args)
+    except ConfigError as exc:
+        print(f"susurro: {exc}", file=sys.stderr, flush=True)
+        return 1
 
-    print(f"susurro daemon: loading {args.model} on {device} ...", flush=True)
+    eng, aud, dae = config.engine, config.audio, config.daemon
+    idle_timeout = dae.idle_timeout_s if dae.idle_timeout_s > 0 else None
+
+    print(f"susurro daemon: loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
     # LazyEngine so an idle daemon can drop the model and free VRAM, reloading via
     # this factory on the next utterance.
-    engine = LazyEngine(lambda: Engine(args.model, device=device), language=args.lang)
+    engine = LazyEngine(
+        lambda: Engine(
+            eng.model,
+            device=eng.device,
+            compute_type=eng.compute_type,
+            language=eng.language,
+            beam_size=eng.beam_size,
+            vad_filter=eng.vad_filter,
+        ),
+        language=eng.language,
+    )
     # Warm now so the first real utterance already hits warm timing (this also
     # triggers the initial load); after an idle-unload the reload is lazy.
-    engine.transcribe(np.zeros(SAMPLE_RATE // 2, dtype=np.float32))
+    engine.transcribe(np.zeros(aud.sample_rate // 2, dtype=np.float32))
 
     # Give the recorder headroom over the daemon timeout so the daemon's auto-stop
     # is always the authoritative stop; the recorder cap is a pure memory backstop.
-    recorder = Recorder(max_duration_s=args.max_record + 5.0, device=device_arg)
-    notifier = NullNotifier() if args.no_notify else Notifier()
+    recorder = Recorder(
+        max_duration_s=dae.max_record_s + 5.0,
+        samplerate=aud.sample_rate,
+        channels=aud.channels,
+        device=aud.device,
+    )
+    notifier = Notifier(timeout_s=config.notify.timeout_s) if dae.notify else NullNotifier()
     daemon = Daemon(
         recorder,
         engine,
         inject,
         notify=notifier,
-        language=args.lang,
-        max_record_s=args.max_record,
+        language=eng.language,
+        max_record_s=dae.max_record_s,
         idle_timeout_s=idle_timeout,
     )
     if idle_timeout:

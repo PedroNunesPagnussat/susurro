@@ -6,10 +6,13 @@ recorder, a fake engine, an inject spy, and a fake clock. No mic, model, socket,
 or wall-clock time.
 """
 
+import argparse
+
 import numpy as np
 import pytest
 
-from susurro.daemon import Daemon, _dispatch
+from susurro.config import Config, DaemonConfig, EngineConfig
+from susurro.daemon import Daemon, _apply_cli, _dispatch
 
 
 class FakeRecorder:
@@ -437,3 +440,61 @@ def test_dispatch_start_and_stop_still_route():
     _dispatch(daemon, "stop")
     assert daemon.recording is False
     assert recorder.stops == 1
+
+
+# --- CLI over config precedence (_apply_cli) -------------------------------
+
+def _args(**over):
+    """A parsed-args stand-in: every flag defaults to its "not passed" sentinel."""
+    base = dict(
+        model=None, device=None, cpu=False, lang=None,
+        max_record=None, idle_timeout=None, no_notify=False,
+    )
+    base.update(over)
+    return argparse.Namespace(**base)
+
+
+def test_apply_cli_no_flags_leaves_config_untouched():
+    config = Config()
+    assert _apply_cli(config, _args()) == config
+
+
+def test_apply_cli_flags_override_config_values():
+    config = Config()
+    out = _apply_cli(config, _args(model="medium", lang="pt", device=3, max_record=90.0, idle_timeout=0.0))
+    assert out.engine.model == "medium"
+    assert out.engine.language == "pt"
+    assert out.audio.device == 3
+    assert out.daemon.max_record_s == 90.0
+    assert out.daemon.idle_timeout_s == 0.0
+    # untouched fields keep the config value
+    assert out.engine.beam_size == 5
+    assert out.engine.compute_type == "int8"
+
+
+def test_apply_cli_config_values_survive_when_no_flag():
+    # A non-default config with every flag unset -> config wins over built-ins.
+    config = Config(
+        engine=EngineConfig(model="tiny", language="pt", beam_size=2),
+        daemon=DaemonConfig(max_record_s=120.0),
+    )
+    out = _apply_cli(config, _args())
+    assert out.engine.model == "tiny"
+    assert out.engine.language == "pt"
+    assert out.engine.beam_size == 2
+    assert out.daemon.max_record_s == 120.0
+
+
+def test_cpu_flag_forces_cpu_over_config_cuda():
+    config = Config(engine=EngineConfig(device="cuda"))
+    assert _apply_cli(config, _args(cpu=True)).engine.device == "cpu"
+
+
+def test_no_notify_flag_forces_notifications_off():
+    config = Config(daemon=DaemonConfig(notify=True))
+    assert _apply_cli(config, _args(no_notify=True)).daemon.notify is False
+
+
+def test_config_can_disable_notifications_without_the_flag():
+    config = Config(daemon=DaemonConfig(notify=False))
+    assert _apply_cli(config, _args(no_notify=False)).daemon.notify is False
