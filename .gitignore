@@ -12,3 +12,7 @@ models/
 
 # Local, personal config (lives in the repo for now, but not pushed)
 /config.toml
+
+# Session artifacts (planning notes, hand-offs) — local scratch, not pushed
+/plan/
+/hand-off-*.md
