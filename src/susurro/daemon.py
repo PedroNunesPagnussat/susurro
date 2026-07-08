@@ -63,6 +63,7 @@ class _ManagedEngine(Protocol):
 
     @property
     def loaded(self) -> bool: ...
+    def load(self) -> None: ...
     def unload(self) -> None: ...
     def transcribe(self, audio: np.ndarray) -> str: ...
 
@@ -107,8 +108,10 @@ class Daemon:
         self._notify = notify or NullNotifier()
         self._language = language
         self._max_record_s = max_record_s
+        # A managed engine can be idle-unloaded and preloaded; a plain one can't.
+        self._managed = isinstance(engine, _ManagedEngine)
         # Idle-unload needs a managed (unloadable) engine; disable it otherwise.
-        self._idle_timeout_s = idle_timeout_s if isinstance(engine, _ManagedEngine) else None
+        self._idle_timeout_s = idle_timeout_s if self._managed else None
         self._clock = clock
         self._log = log
         self._recording = False
@@ -154,6 +157,22 @@ class Daemon:
         self._last_use = self._start_t  # activity: reset the idle-unload timer
         # persistent "armed" toast (shows the active language) until stop replaces it
         self._notify.recording(self._language)
+        # Capture is already live above; now rebuild the model (if idle-unloaded)
+        # so the load overlaps the hold instead of landing on the release.
+        self._preload()
+
+    def _preload(self) -> None:
+        """Best-effort model rebuild on the press. If the engine was idle-unloaded,
+        build it now so the multi-second load overlaps the user speaking; a plain
+        (non-managed) or already-loaded engine is a no-op. Never raises — a failed
+        preload just leaves the release-path `transcribe` to reload and surface the
+        error, so a press is never worse than before this optimization existed."""
+        if not self._managed or self._engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
+            return
+        try:
+            self._engine.load()  # type: ignore[attr-defined]  # guarded: managed engine
+        except Exception as exc:  # noqa: BLE001 (preload is a pure optimization)
+            self._log(f"preload on press failed ({exc}) — will reload on release")
 
     def stop(self) -> str:
         """End capture, transcribe -> format -> inject, and return the emitted

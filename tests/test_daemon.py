@@ -65,6 +65,7 @@ class FakeManagedEngine:
         self.language = "en"
         self._loaded = True  # warmed at startup, like the real daemon
         self.unloads = 0
+        self.loads = 0
 
     @property
     def loaded(self):
@@ -72,6 +73,10 @@ class FakeManagedEngine:
 
     def set_language(self, code):
         self.language = code
+
+    def load(self):
+        self._loaded = True
+        self.loads += 1
 
     def unload(self):
         self._loaded = False
@@ -329,6 +334,78 @@ def test_transcribe_reloads_after_idle_unload():
     text = daemon.stop()  # pays the reload, then transcribes
     assert text == "hello world"
     assert engine.loaded is True
+    assert injected == ["hello world"]
+
+
+# --- preload on key-press --------------------------------------------------
+
+def test_press_reloads_an_unloaded_managed_engine():
+    # After an idle-unload, the press must rebuild the model *now* so the load
+    # overlaps the hold — engine.loaded is True before any stop() runs.
+    daemon, engine, clock, _injected = _make_managed(idle_timeout_s=60.0)
+    clock.advance(60.0)
+    daemon.check_idle()  # idle-unload drops the model
+    assert engine.loaded is False
+
+    daemon.start()
+    assert engine.loaded is True  # rebuilt on the press, not deferred to stop
+    assert engine.loads == 1
+    assert daemon.recording is True
+
+
+def test_press_does_not_reload_an_already_loaded_engine():
+    # A warm engine must not be rebuilt on the press — no double-load.
+    daemon, engine, _clock, _injected = _make_managed(idle_timeout_s=60.0)
+    assert engine.loaded is True
+
+    daemon.start()
+    assert engine.loads == 0  # already warm — load() never called
+    assert engine.loaded is True
+
+
+def test_press_on_plain_engine_never_attempts_load():
+    # A non-managed engine has no load(); the press must not touch it (a wrongful
+    # call would AttributeError on the plain FakeEngine). Behaves exactly as today.
+    daemon, recorder, _engine, injected = _make(engine=FakeEngine())
+    daemon.start()  # must not raise
+    assert daemon.recording is True
+    assert recorder.starts == 1
+
+    daemon.stop()  # and the full round-trip still works
+    assert injected == ["hello world"]
+
+
+def test_failed_preload_leaves_daemon_recording_and_stop_still_transcribes():
+    # Preload is best-effort: a load() that raises must not abort the capture,
+    # and the release-path transcribe still reloads + injects.
+    class FlakyPreloadEngine(FakeManagedEngine):
+        def load(self):
+            self.loads += 1
+            raise RuntimeError("CUDA OOM on preload")
+
+    engine = FlakyPreloadEngine()
+    engine._loaded = False  # start unloaded, as after an idle-unload
+    daemon, recorder, _engine, injected = _make(engine=engine)
+
+    daemon.start()  # preload raises internally
+    assert daemon.recording is True  # capture survived the failed preload
+    assert recorder.recording is True
+    assert engine.loads == 1  # preload was attempted
+
+    text = daemon.stop()  # transcribe-path reload picks up the slack
+    assert text == "hello world"
+    assert daemon.recording is False
+    assert injected == ["hello world"]
+
+
+def test_short_press_then_immediate_stop_still_transcribes():
+    # A press immediately followed by a release (no unload in between) must
+    # transcribe, inject, and return to idle without wedging.
+    daemon, engine, _clock, injected = _make_managed(idle_timeout_s=60.0)
+    daemon.start()
+    text = daemon.stop()
+    assert text == "hello world"
+    assert daemon.recording is False
     assert injected == ["hello world"]
 
 
