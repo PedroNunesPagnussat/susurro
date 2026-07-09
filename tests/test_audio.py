@@ -151,3 +151,23 @@ def test_load_wav_returns_mono_float32_in_unit_range():
     assert np.abs(audio).max() <= 1.0
     # ~11s at 16kHz
     assert abs(len(audio) - 11 * SAMPLE_RATE) < SAMPLE_RATE
+
+
+def test_load_wav_downmixes_multichannel_to_first_channel(tmp_path):
+    # A stereo WAV must come back mono (first channel only), not interleaved: 3
+    # frames -> 3 samples, and the left channel (not the right) is what survives.
+    import wave
+
+    path = tmp_path / "stereo.wav"
+    left, right = 16_000, -16_000  # distinct per channel so a wrong pick is visible
+    frames = np.array([[left, right]] * 3, dtype=np.int16).tobytes()
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(frames)
+
+    out = load_wav(path)
+    assert out.ndim == 1
+    assert out.shape == (3,)  # 3 frames, mono — not 6 interleaved samples
+    np.testing.assert_allclose(out, [left / 32768.0] * 3, rtol=1e-6)  # left kept

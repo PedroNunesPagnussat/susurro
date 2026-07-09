@@ -5,7 +5,7 @@ Bound to a Hyprland key: `bind` (press) -> `start`, `bindr` (release) -> `stop`
 process per key press stays cheap; the daemon owns all the cost, and release->text
 latency stays inference-bound.
 
-Exit codes: 0 sent, 1 daemon not running, 2 bad usage.
+Exit codes: 0 sent, 1 daemon unreachable, 2 bad usage.
 """
 
 from __future__ import annotations
@@ -18,13 +18,17 @@ from ._ipc import socket_path
 
 def send(cmd: str) -> int:
     """Open the daemon socket, write `cmd`, close. Returns 0 on success, 1 if the
-    daemon isn't running (socket missing or not accepting)."""
+    daemon can't be reached (socket missing, not accepting, or otherwise unusable).
+
+    Catches every `OSError`, not just the missing/refused pair: a bad runtime dir, a
+    permission error, or a reset mid-write must exit 1 with a diagnostic, never dump
+    a traceback on the key-press this runs from."""
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
             s.connect(socket_path())
             s.sendall(cmd.encode())
-    except (FileNotFoundError, ConnectionRefusedError) as exc:
-        print(f"susurro-ctl: daemon not running ({exc})", file=sys.stderr)
+    except OSError as exc:  # missing socket, refused, reset, bad path, no permission…
+        print(f"susurro-ctl: cannot reach daemon ({exc})", file=sys.stderr)
         return 1
     return 0
 

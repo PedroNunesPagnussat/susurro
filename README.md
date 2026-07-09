@@ -21,8 +21,6 @@ recording state (hold-to-talk has no built-in "am I recording?" cue). A safety
 auto-stop (`--max-record`, default 60s) guarantees a missed release can't wedge the
 daemon in "recording".
 
-See `SPEC.md` for the full design rationale.
-
 ## Requirements
 
 - NVIDIA GPU with CUDA (target: GTX 1060 6GB, Pascal). CPU fallback exists but is slower.
@@ -212,6 +210,7 @@ src/susurro/
   engine.py       # UI-agnostic Engine: audio -> transcript (warm model)
   formatter.py    # pure rule-based cleanup (unit-tested)
   config.py       # single-source config: load config.toml -> Config (CLI overrides)
+  _cli.py         # shared CLI plumbing for both entrypoints (flags -> config)
   _cuda.py        # preload the venv's cuBLAS/cuDNN for CTranslate2
   daemon.py       # warm daemon + idle<->recording state machine (Unix socket)
   ctl.py          # thin hold-to-talk client (susurro-ctl start|stop)
@@ -221,8 +220,9 @@ src/susurro/
   __main__.py     # no-daemon mic test (susurro)
 config.toml       # repo-local tunables (optional, .gitignore'd; --config to relocate)
 tests/
-  test_formatter.py  test_audio.py  test_daemon.py  test_ctl.py
-  test_inject.py     test_notify.py  test_config.py  test_main.py
+  test_formatter.py  test_audio.py    test_daemon.py  test_ctl.py
+  test_inject.py     test_notify.py   test_config.py  test_main.py
+  test_cli.py        test_cuda.py     test_serve.py   test_lazy_engine.py
   test_engine.py     # skipped when no CUDA/model
   fixtures/
 ```

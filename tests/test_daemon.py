@@ -118,7 +118,8 @@ class SpyNotifier:
 
 
 def _make(
-    recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeout_s=None, language="en"
+    recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeout_s=None,
+    language="en", notify=None,
 ):
     recorder = recorder or FakeRecorder()
     engine = engine or FakeEngine()
@@ -127,7 +128,7 @@ def _make(
         recorder,
         engine,
         injected.append,
-        notify=SpyNotifier(),
+        notify=notify or SpyNotifier(),  # pass your own to assert on the toast sequence
         language=language,
         max_record_s=max_record_s,
         idle_timeout_s=idle_timeout_s,
@@ -422,31 +423,35 @@ def test_plain_engine_never_unloads():
 # --- notifications ---------------------------------------------------------
 
 def test_start_raises_recording_toast():
-    daemon, _recorder, _engine, _injected = _make()
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(notify=spy)
     daemon.start()
-    assert daemon._notify.events == [("recording", "en")]
+    assert spy.events == [("recording", "en")]
 
 
 def test_stop_clears_toast_with_transcript():
-    daemon, _recorder, _engine, _injected = _make()
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(notify=spy)
     daemon.start()
     daemon.stop()
-    assert daemon._notify.events == [("recording", "en"), ("done", "hello world")]
+    assert spy.events == [("recording", "en"), ("done", "hello world")]
 
 
 def test_stop_without_start_does_not_notify():
-    daemon, _recorder, _engine, _injected = _make()
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(notify=spy)
     daemon.stop()  # no-op stop must not post a stray toast
-    assert daemon._notify.events == []
+    assert spy.events == []
 
 
 def test_auto_stop_clears_toast():
     clock = FakeClock()
-    daemon, _recorder, _engine, _injected = _make(max_record_s=30.0, clock=clock)
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(max_record_s=30.0, clock=clock, notify=spy)
     daemon.start()
     clock.advance(30.0)
     daemon.check_timeout()
-    assert daemon._notify.events == [("recording", "en"), ("done", "hello world")]
+    assert spy.events == [("recording", "en"), ("done", "hello world")]
 
 
 def test_toast_is_cleared_even_if_engine_raises():
@@ -454,45 +459,50 @@ def test_toast_is_cleared_even_if_engine_raises():
         def transcribe(self, audio):
             raise RuntimeError("boom")
 
-    daemon, _recorder, _engine, _injected = _make(engine=BoomEngine())
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(engine=BoomEngine(), notify=spy)
     daemon.start()
     with pytest.raises(RuntimeError, match="boom"):
         daemon.stop()
     # the persistent -t 0 toast must still be replaced on failure, else it hangs
-    assert daemon._notify.events == [("recording", "en"), ("done", "")]
+    assert spy.events == [("recording", "en"), ("done", "")]
 
 
 # --- language --------------------------------------------------------------
 
 def test_set_language_updates_engine_and_posts_toast():
-    daemon, _recorder, engine, _injected = _make()
+    spy = SpyNotifier()
+    daemon, _recorder, engine, _injected = _make(notify=spy)
     active = daemon.set_language("pt")
     assert active == "pt"
     assert daemon.language == "pt"
     assert engine.language == "pt"  # pushed to the engine, no reload
-    assert daemon._notify.events == [("language", "pt")]
+    assert spy.events == [("language", "pt")]
 
 
 def test_toggle_flips_en_and_pt():
-    daemon, _recorder, engine, _injected = _make(language="en")
+    spy = SpyNotifier()
+    daemon, _recorder, engine, _injected = _make(language="en", notify=spy)
     assert daemon.set_language("toggle") == "pt"
     assert engine.language == "pt"
     assert daemon.set_language("toggle") == "en"  # flips back
     assert engine.language == "en"
-    assert daemon._notify.events == [("language", "pt"), ("language", "en")]
+    assert spy.events == [("language", "pt"), ("language", "en")]
 
 
 def test_start_uses_the_active_language_in_recording_toast():
-    daemon, _recorder, _engine, _injected = _make(language="en")
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(language="en", notify=spy)
     daemon.set_language("pt")
     daemon.start()
-    assert daemon._notify.events == [("language", "pt"), ("recording", "pt")]
+    assert spy.events == [("language", "pt"), ("recording", "pt")]
 
 
 def test_daemon_boots_into_the_given_language():
-    daemon, _recorder, _engine, _injected = _make(language="pt")
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, _injected = _make(language="pt", notify=spy)
     daemon.start()
-    assert daemon._notify.events == [("recording", "pt")]
+    assert spy.events == [("recording", "pt")]
 
 
 # --- dispatch --------------------------------------------------------------
@@ -517,6 +527,17 @@ def test_dispatch_start_and_stop_still_route():
     _dispatch(daemon, "stop")
     assert daemon.recording is False
     assert recorder.stops == 1
+
+
+def test_dispatch_unknown_verb_warns_and_changes_nothing(capsys):
+    # An unrecognized command must be reported on stderr and touch no state — the
+    # daemon stays idle rather than mis-routing a typo into start/stop.
+    daemon, recorder, _engine, injected = _make()
+    _dispatch(daemon, "frobnicate now")
+    assert daemon.recording is False
+    assert recorder.starts == 0
+    assert injected == []
+    assert "unknown command" in capsys.readouterr().err
 
 
 # --- CLI over config precedence (_apply_cli) -------------------------------
