@@ -20,6 +20,16 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# Canonical tunable defaults. Each lives with the module that owns the concept and
+# is imported here so the dataclass default and the module constant can't drift
+# (config is the single source of truth). `max_record_s` is the exception: it's
+# owned here because `daemon` imports config, so config can't import back from it.
+from .audio import CHANNELS, SAMPLE_RATE
+from .engine import DEFAULT_MODEL
+from .notify import DEFAULT_TIMEOUT_S
+
+DEFAULT_MAX_RECORD_S = 60.0
+
 
 class ConfigError(Exception):
     """A config file that exists but can't be used: bad TOML or an invalid value."""
@@ -32,7 +42,7 @@ class _Invalid(Exception):
 
 @dataclass(frozen=True)
 class EngineConfig:
-    model: str = "large-v3-turbo"
+    model: str = DEFAULT_MODEL
     compute_type: str = "int8"
     device: str = "cuda"  # "cuda" | "cpu"
     language: str = "en"
@@ -42,21 +52,21 @@ class EngineConfig:
 
 @dataclass(frozen=True)
 class AudioConfig:
-    sample_rate: int = 16_000
-    channels: int = 1
+    sample_rate: int = SAMPLE_RATE
+    channels: int = CHANNELS
     device: int | str | None = None  # input device index or name substring
 
 
 @dataclass(frozen=True)
 class DaemonConfig:
-    max_record_s: float = 60.0
+    max_record_s: float = DEFAULT_MAX_RECORD_S
     idle_timeout_s: float = 300.0  # <=0 disables idle-unload
     notify: bool = True
 
 
 @dataclass(frozen=True)
 class NotifyConfig:
-    timeout_s: float = 5.0  # notify-send subprocess backstop (not a latency knob)
+    timeout_s: float = DEFAULT_TIMEOUT_S  # notify-send subprocess backstop (not a latency knob)
 
 
 @dataclass(frozen=True)

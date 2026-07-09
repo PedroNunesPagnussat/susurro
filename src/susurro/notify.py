@@ -23,13 +23,14 @@ import sys
 _SYNC_HINT = "string:x-canonical-private-synchronous:susurro"
 _APP = "susurro"
 # Generous: notify-send should return at once; this only kills a stuck spawn so
-# it can't wedge the accept loop. Not a latency knob.
-_TIMEOUT_S = 5.0
+# it can't wedge the accept loop. Not a latency knob. Canonical default that also
+# backs `NotifyConfig.timeout_s` (single source of truth).
+DEFAULT_TIMEOUT_S = 5.0
 # Friendly display names for the language toasts; unknown codes show the raw code.
 _LANG_NAMES = {"en": "English", "pt": "Português"}
 
 
-def _send(*args: str, timeout: float = _TIMEOUT_S) -> None:
+def _send(*args: str, timeout: float = DEFAULT_TIMEOUT_S) -> None:
     """Fire notify-send, swallowing every failure onto stderr. A missing binary,
     a non-zero return, or a hung spawn must never reach the daemon loop."""
     try:
@@ -50,7 +51,7 @@ class Notifier:
     single-threaded loop); it comes from `[notify] timeout_s` in the config.
     """
 
-    def __init__(self, timeout_s: float = _TIMEOUT_S) -> None:
+    def __init__(self, timeout_s: float = DEFAULT_TIMEOUT_S) -> None:
         self._timeout_s = timeout_s
 
     def recording(self, language: str) -> None:

@@ -114,6 +114,34 @@ def test_recorder_defaults_to_mono_16k(monkeypatch):
     assert kwargs["samplerate"] == SAMPLE_RATE
 
 
+def test_recorder_roundtrip_assembles_callback_audio(monkeypatch):
+    # start() -> PortAudio drives the callback -> stop() returns the assembled mono
+    # buffer. Exercises the Recorder wiring end to end (not just _WindowBuffer): the
+    # callback closure feeds `buf`, and stop() reads it back.
+    InputStream = _fake_sounddevice(monkeypatch)
+    rec = Recorder()
+    rec.start()
+    callback = InputStream.call_args.kwargs["callback"]
+    callback(np.array([[0.1], [0.2]], dtype=np.float32), 2, None, None)
+    callback(np.array([[0.3]], dtype=np.float32), 1, None, None)
+    out = rec.stop()
+    np.testing.assert_allclose(out, [0.1, 0.2, 0.3], rtol=1e-6)
+    assert rec.recording is False  # stream released
+
+
+def test_recorder_closes_stream_if_start_raises(monkeypatch):
+    # If open() succeeds but start() fails, the allocated stream must be closed
+    # (not leaked) and the error surfaced as RuntimeError.
+    fake = _fake_sounddevice(monkeypatch)
+    import sounddevice as sd  # the fake just injected into sys.modules
+
+    stream = fake.return_value
+    stream.start.side_effect = sd.PortAudioError("stream start failed")
+    with pytest.raises(RuntimeError, match="audio capture failed"):
+        Recorder().start()
+    stream.close.assert_called_once()  # no leak on the error path
+
+
 # --- load_wav --------------------------------------------------------------
 
 def test_load_wav_returns_mono_float32_in_unit_range():

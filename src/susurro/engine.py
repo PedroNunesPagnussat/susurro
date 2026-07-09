@@ -8,6 +8,7 @@ the daemon, the mic test, and the eval harness all share one transcription path.
 from __future__ import annotations
 
 import gc
+import sys
 from collections.abc import Callable
 
 import numpy as np
@@ -86,7 +87,7 @@ class LazyEngine:
         factory: Callable[[], Engine],
         *,
         language: str = "en",
-        log: Callable[[str], None] = lambda msg: print(msg, flush=True),
+        log: Callable[[str], None] = lambda msg: print(msg, file=sys.stderr, flush=True),
     ) -> None:
         self._factory = factory
         self._language = language

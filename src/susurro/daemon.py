@@ -29,14 +29,17 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from ._cli import add_common_flags, apply_engine_audio, positive_float
 from ._ipc import socket_path
 from .audio import Recorder
-from .config import Config, ConfigError, load_config, pick
+from .config import DEFAULT_MAX_RECORD_S, Config, ConfigError, load_config, pick
 from .engine import Engine, LazyEngine
 from .inject import inject
 from .notify import Notifier, NullNotifier
 
-DEFAULT_MAX_RECORD_S = 60.0
+# A connected client that never sends is dropped after this long so it can't wedge
+# the single-threaded accept loop (the real `susurro-ctl` sends then closes at once).
+_CLIENT_RECV_TIMEOUT_S = 1.0
 
 
 class _Capturer(Protocol):
@@ -54,18 +57,19 @@ class _Transcriber(Protocol):
 
 
 @runtime_checkable
-class _ManagedEngine(Protocol):
+class _ManagedEngine(_Transcriber, Protocol):
     """A `_Transcriber` that can also be unloaded/reloaded (real: `engine.LazyEngine`).
 
     Runtime-checkable so the daemon can detect at construction whether idle-unload
-    is even possible: a plain engine without this capability just disables it.
+    is even possible: a plain engine without this capability just disables it. It
+    extends `_Transcriber`, so a value narrowed to `_ManagedEngine` is still a full
+    transcriber (no separate reference needed for `transcribe`/`set_language`).
     """
 
     @property
     def loaded(self) -> bool: ...
     def load(self) -> None: ...
     def unload(self) -> None: ...
-    def transcribe(self, audio: np.ndarray) -> str: ...
 
 
 class _Notifier(Protocol):
@@ -100,7 +104,7 @@ class Daemon:
         max_record_s: float = DEFAULT_MAX_RECORD_S,
         idle_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
-        log: Callable[[str], None] = lambda msg: print(msg, flush=True),
+        log: Callable[[str], None] = lambda msg: print(msg, file=sys.stderr, flush=True),
     ) -> None:
         self._recorder = recorder
         self._engine = engine
@@ -109,9 +113,11 @@ class Daemon:
         self._language = language
         self._max_record_s = max_record_s
         # A managed engine can be idle-unloaded and preloaded; a plain one can't.
-        self._managed = isinstance(engine, _ManagedEngine)
+        # Hold the narrowed reference (not just a bool) so the load/unload calls need
+        # no casts: `self._managed is None` means the capability is absent.
+        self._managed: _ManagedEngine | None = engine if isinstance(engine, _ManagedEngine) else None
         # Idle-unload needs a managed (unloadable) engine; disable it otherwise.
-        self._idle_timeout_s = idle_timeout_s if self._managed else None
+        self._idle_timeout_s = idle_timeout_s if self._managed is not None else None
         self._clock = clock
         self._log = log
         self._recording = False
@@ -167,10 +173,11 @@ class Daemon:
         (non-managed) or already-loaded engine is a no-op. Never raises — a failed
         preload just leaves the release-path `transcribe` to reload and surface the
         error, so a press is never worse than before this optimization existed."""
-        if not self._managed or self._engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
+        managed = self._managed
+        if managed is None or managed.loaded:
             return
         try:
-            self._engine.load()  # type: ignore[attr-defined]  # guarded: managed engine
+            managed.load()
         except Exception as exc:  # noqa: BLE001 (preload is a pure optimization)
             self._log(f"preload on press failed ({exc}) — will reload on release")
 
@@ -208,7 +215,10 @@ class Daemon:
         """Safety auto-stop: if the max record duration elapsed, stop as if a
         `stop` arrived (returns the emitted text); else None. This is the
         anti-wedge backstop for a dropped release."""
-        if self._recording and self._clock() - self._start_t >= self._max_record_s:
+        # remaining() == 0.0 iff recording *and* the deadline has passed (it returns
+        # None when idle, and clamps to 0.0 at/after the deadline) — one source for
+        # the fire condition.
+        if self.remaining() == 0.0:
             self._log(f"safety auto-stop after {self._max_record_s:.0f}s (missed release?)")
             return self.stop()
         return None
@@ -218,9 +228,10 @@ class Daemon:
         idle-unload disabled, currently recording, or the model already unloaded.
         `serve()` folds this into its accept() timeout so it wakes in time to drop
         the model."""
-        if self._idle_timeout_s is None or self._recording:
+        managed = self._managed
+        if managed is None or self._idle_timeout_s is None or self._recording:
             return None
-        if not self._engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
+        if not managed.loaded:
             return None
         return max(0.0, self._idle_timeout_s - (self._clock() - self._last_use))
 
@@ -228,16 +239,15 @@ class Daemon:
         """Drop the warm model if it's been idle past the timeout, freeing VRAM.
         Returns True iff it unloaded. No-op while recording, when disabled, or when
         the model is already unloaded."""
-        if self._idle_timeout_s is None or self._recording:
+        # idle_remaining() == 0.0 iff idle-unload is armed, not recording, the model
+        # is loaded, and the timeout has elapsed — so `self._managed` is non-None here.
+        if self.idle_remaining() != 0.0:
             return False
-        engine = self._engine
-        if not engine.loaded:  # type: ignore[attr-defined]  # guarded: managed engine
-            return False
-        if self._clock() - self._last_use >= self._idle_timeout_s:
-            self._log(f"idle {self._idle_timeout_s:.0f}s — unloading model to free VRAM")
-            engine.unload()  # type: ignore[attr-defined]  # guarded: managed engine
-            return True
-        return False
+        managed = self._managed
+        assert managed is not None  # idle_remaining() returned a number, not None
+        self._log(f"idle {self._idle_timeout_s:.0f}s — unloading model to free VRAM")
+        managed.unload()
+        return True
 
     def abort(self) -> None:
         """Drop any in-progress capture without transcribing (shutdown path)."""
@@ -265,13 +275,52 @@ def _dispatch(daemon: Daemon, cmd: str) -> None:
         print(f"susurro: unknown command {cmd!r}", file=sys.stderr, flush=True)
 
 
+def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
+    """One iteration of the accept loop: wait for the nearer deadline, then either
+    run the safety/idle checks (on timeout) or accept + dispatch one command.
+
+    Kept separate from the `while True` in `serve()` so the loop body — including the
+    two blocking points (accept and recv) and the dispatch-error recovery — is
+    unit-testable against a real socket without spinning up the forever loop.
+    """
+    # Wake by the nearest of two deadlines: the recording auto-stop and the
+    # idle-unload. Either may be None (not armed); None -> block until a command.
+    # Floor a tiny positive value so accept() stays in timeout mode (0.0 would flip
+    # the socket to non-blocking and busy-spin).
+    deadlines = [d for d in (daemon.remaining(), daemon.idle_remaining()) if d is not None]
+    srv.settimeout(None if not deadlines else max(min(deadlines), 0.05))
+    try:
+        conn, _ = srv.accept()
+    except TimeoutError:
+        daemon.check_timeout()  # safety window elapsed with no stop
+        daemon.check_idle()  # idle window elapsed -> free VRAM
+        return
+    with conn:
+        # accept() does *not* pass its timeout to the connection (it's forced
+        # blocking), so cap the recv explicitly: a client that connects but never
+        # sends must not wedge this single-threaded loop (no auto-stop, no unload).
+        conn.settimeout(_CLIENT_RECV_TIMEOUT_S)
+        try:
+            cmd = conn.recv(64).decode(errors="replace").strip()
+        except OSError as exc:  # stalled/reset client; TimeoutError is an OSError
+            print(f"susurro: dropping stalled client ({exc})", file=sys.stderr, flush=True)
+            return
+    try:
+        _dispatch(daemon, cmd)
+    except Exception as exc:  # noqa: BLE001 (keep the daemon alive)
+        print(f"susurro: command {cmd!r} failed: {exc}", file=sys.stderr, flush=True)
+        daemon.abort()  # never leave the mic stuck open on an error
+
+
 def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     """Socket shell around a `Daemon`: bind the Unix socket, dispatch start/stop,
     and wake on the safety-timeout deadline to run the auto-stop.
 
     Single client, single-flight: transcription blocks the accept loop, which is
-    the intended serialization (one utterance at a time). Single-threaded — the
-    safety timeout rides accept()'s socket timeout, so there are no locks.
+    the intended serialization (one utterance at a time). Single-threaded and
+    lock-free: the two blocking points are bounded — accept() rides the nearest
+    deadline, and the per-connection recv() rides `_CLIENT_RECV_TIMEOUT_S` — so
+    neither a quiet period nor a silent client can wedge it.
     """
     sock_path = sock_path or socket_path()
     if os.path.exists(sock_path):
@@ -282,25 +331,7 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     print(f"susurro daemon: listening on {sock_path}", flush=True)
     try:
         while True:
-            # Wake by the nearest of two deadlines: the recording auto-stop and the
-            # idle-unload. Either may be None (not armed); None -> block until a
-            # command. Floor a tiny positive value so accept() stays in timeout mode
-            # (0.0 would flip the socket to non-blocking and busy-spin).
-            deadlines = [d for d in (daemon.remaining(), daemon.idle_remaining()) if d is not None]
-            srv.settimeout(None if not deadlines else max(min(deadlines), 0.05))
-            try:
-                conn, _ = srv.accept()
-            except TimeoutError:
-                daemon.check_timeout()  # safety window elapsed with no stop
-                daemon.check_idle()  # idle window elapsed -> free VRAM
-                continue
-            with conn:
-                cmd = conn.recv(64).decode(errors="replace").strip()
-            try:
-                _dispatch(daemon, cmd)
-            except Exception as exc:  # noqa: BLE001 (keep the daemon alive)
-                print(f"susurro: command {cmd!r} failed: {exc}", file=sys.stderr, flush=True)
-                daemon.abort()  # never leave the mic stuck open on an error
+            _serve_once(srv, daemon)
     except KeyboardInterrupt:
         print("\nsusurro daemon: bye", flush=True)
     finally:
@@ -311,29 +342,15 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
     return 0
 
 
-def _parse_device(value: str) -> int | str:
-    """A numeric `--device` is a PortAudio index; anything else is a name substring."""
-    return int(value) if value.isdigit() else value
-
-
 def _build_parser() -> argparse.ArgumentParser:
-    # Flag defaults are None ("not passed") so `_apply_cli` only overrides the config
-    # value when a flag is actually given: built-in defaults < config file < CLI flag.
+    # Shared engine/audio flags come from `add_common_flags`; the rest are daemon-only.
+    # `--max-record` uses `positive_float` so a flag can't set a non-positive cap that
+    # the config file would have rejected (defaults < config file < CLI flag).
     p = argparse.ArgumentParser(prog="susurro-daemon", description=__doc__)
-    p.add_argument("--config", default=None, help="path to config.toml (default: the repo-local config.toml)")
-    p.add_argument("--model", default=None, help="faster-whisper model name")
-    p.add_argument("--device", type=_parse_device, default=None, help="input device index or name")
-    p.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
-    p.add_argument(
-        "--lang",
-        "--language",
-        dest="lang",
-        default=None,
-        help="startup transcription language code (e.g. en, pt); live-switch with susurro-ctl lang",
-    )
+    add_common_flags(p)
     p.add_argument(
         "--max-record",
-        type=float,
+        type=positive_float,
         default=None,
         help="safety auto-stop after this many seconds",
     )
@@ -356,20 +373,14 @@ def _apply_cli(config: Config, args: argparse.Namespace) -> Config:
 
     `--cpu` and `--no-notify` are force-off switches (there's no matching on flag),
     so they override the config only in the off direction."""
-    engine = replace(
-        config.engine,
-        model=pick(args.model, config.engine.model),
-        device="cpu" if args.cpu else config.engine.device,
-        language=pick(args.lang, config.engine.language),
-    )
-    audio = replace(config.audio, device=pick(args.device, config.audio.device))
+    config = apply_engine_audio(config, args)
     daemon = replace(
         config.daemon,
         max_record_s=pick(args.max_record, config.daemon.max_record_s),
         idle_timeout_s=pick(args.idle_timeout, config.daemon.idle_timeout_s),
         notify=config.daemon.notify and not args.no_notify,
     )
-    return replace(config, engine=engine, audio=audio, daemon=daemon)
+    return replace(config, daemon=daemon)
 
 
 def main(argv: list[str] | None = None) -> int:

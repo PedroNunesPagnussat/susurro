@@ -15,45 +15,28 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from dataclasses import replace
 
 import numpy as np
 
+from ._cli import add_common_flags, apply_engine_audio, positive_float
 from .audio import Recorder, list_input_devices
-from .config import Config, ConfigError, load_config, pick
+from .config import Config, ConfigError, load_config
 from .engine import Engine
 
 
-def _parse_device(value: str) -> int | str:
-    return int(value) if value.isdigit() else value
-
-
 def _build_parser() -> argparse.ArgumentParser:
-    # Flag defaults are None so `_apply_cli` only overrides config when passed
-    # (defaults < config file < CLI flag). `--duration` is a mic-test-only knob.
+    # `--duration` is a mic-test-only knob; the rest are the shared engine/audio
+    # flags (defaults < config file < CLI flag).
     p = argparse.ArgumentParser(prog="susurro", description=__doc__)
-    p.add_argument("--config", default=None, help="path to config.toml")
-    p.add_argument("--duration", type=float, default=3.0, help="window length in seconds")
-    p.add_argument("--device", type=_parse_device, default=None, help="input device index or name")
-    p.add_argument("--model", default=None, help="faster-whisper model name")
-    p.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
-    p.add_argument(
-        "--lang", "--language", dest="lang", default=None, help="transcription language code (e.g. en, pt)"
-    )
+    add_common_flags(p)
+    p.add_argument("--duration", type=positive_float, default=3.0, help="window length in seconds")
     p.add_argument("--list-devices", action="store_true", help="list input devices and exit")
     return p
 
 
 def _apply_cli(config: Config, args: argparse.Namespace) -> Config:
-    """Layer the mic test's flags over the loaded config (`--cpu` forces CPU)."""
-    engine = replace(
-        config.engine,
-        model=pick(args.model, config.engine.model),
-        device="cpu" if args.cpu else config.engine.device,
-        language=pick(args.lang, config.engine.language),
-    )
-    audio = replace(config.audio, device=pick(args.device, config.audio.device))
-    return replace(config, engine=engine, audio=audio)
+    """Layer the mic test's flags over the loaded config (engine/audio only)."""
+    return apply_engine_audio(config, args)
 
 
 def _record_window(recorder: Recorder, duration_s: float) -> np.ndarray:

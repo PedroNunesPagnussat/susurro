@@ -102,6 +102,7 @@ class Recorder:
         def _callback(indata, _frames, _time, status):  # noqa: ANN001 (PortAudio sig)
             buf.add(indata, status)  # closes over buf, immune to stop() nulling state
 
+        stream = None
         try:
             stream = sd.InputStream(
                 samplerate=self.samplerate,
@@ -112,6 +113,10 @@ class Recorder:
             )
             stream.start()
         except sd.PortAudioError as exc:  # no device, bad rate, server down...
+            # If open() succeeded but start() failed, the stream is allocated but
+            # never handed back — close it so a failed start doesn't leak it.
+            if stream is not None:
+                stream.close()
             raise RuntimeError(f"audio capture failed: {exc}") from exc
 
         self._stream = stream
