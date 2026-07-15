@@ -17,6 +17,25 @@ dependencies = [
 susurro = "susurro.__main__:main"
 susurro-daemon = "susurro.daemon:main"
 susurro-ctl = "susurro.ctl:main"
+susurro-bench = "susurro.bench.cli:main"
+
+# The benchmark's extra runtimes live here, NOT in core `dependencies`: the daemon's
+# footprint and CUDA/CTranslate2 ABI stay untouched. Install with `uv sync --extra bench`.
+# jiwer (WER/CER scoring) lands now; whisper.cpp (pywhispercpp) and Parakeet (NeMo)
+# join in Steps 6-7.
+[project.optional-dependencies]
+bench = [
+    "jiwer>=3",
+]
+# Heavy runtimes are split into their own extras so `bench` (scoring + faster-whisper,
+# which is a core dep) stays light. Install a backend only when you want to benchmark
+# it: `uv sync --extra bench --extra bench-whispercpp`.
+bench-whispercpp = [
+    "pywhispercpp>=1.2",
+]
+bench-parakeet = [
+    "nemo-toolkit[asr]>=2.0",
+]
 
 [dependency-groups]
 dev = [

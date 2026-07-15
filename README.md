@@ -202,6 +202,24 @@ uv run pytest           # pure logic (formatter, buffer, daemon state machine,
 uv run ruff check src tests
 ```
 
+## Benchmarking
+
+`susurro-bench` measures which model/runtime is most accurate and fastest **on your
+own hardware and voice** (published benchmarks use other speakers, GPUs, and
+precisions). It records you reading a fixed set of scripts, runs every available
+model (faster-whisper `large-v3-turbo`/`large-v3`, optionally whisper.cpp and NeMo
+Parakeet), and prints a comparable WER + latency/RTF table.
+
+```sh
+uv sync --extra bench                 # scoring + faster-whisper contenders
+uv run susurro-bench --list-models    # what's wired and installed
+uv run susurro-bench record           # read the scripts into bench/recordings/ (gitignored)
+uv run susurro-bench run              # transcribe every recording with every model -> table
+```
+
+Full workflow, metric definitions, and the keep-or-switch results table live in
+[`bench/README.md`](bench/README.md).
+
 ## Layout
 
 ```
@@ -218,11 +236,23 @@ src/susurro/
   notify.py       # recording/done desktop toasts via notify-send
   _ipc.py         # shared socket path (stdlib-only; keeps the client light)
   __main__.py     # no-daemon mic test (susurro)
+  bench/          # susurro-bench: offline model benchmark (optional extras)
+    transcriber.py  # Transcriber protocol (the common backend seam)
+    registry.py     # id -> ModelSpec map (lazy build + import-probe availability)
+    faster_whisper_backend.py  whispercpp_backend.py  parakeet_backend.py
+    recording.py    # `record`: guided capture + pure save_wav / planner
+    wer.py          # WER/CER scoring via jiwer (normalized + raw + CER)
+    runner.py       # `run`: measure (warm-up discarded, median of N) + score + report
+    cli.py          # susurro-bench entrypoint (record / run / --list-models)
 config.toml       # repo-local tunables (optional, .gitignore'd; --config to relocate)
+bench/scripts/    # committed reference scripts; recordings/ + results/ gitignored
 tests/
   test_formatter.py  test_audio.py    test_daemon.py  test_ctl.py
   test_inject.py     test_notify.py   test_config.py  test_main.py
   test_cli.py        test_cuda.py     test_serve.py   test_lazy_engine.py
   test_engine.py     # skipped when no CUDA/model
+  test_bench_registry.py  test_bench_transcriber.py  test_bench_cli.py
+  test_bench_recording.py  test_bench_wer.py  test_bench_runner.py
+  test_bench_faster_whisper.py  # skipped when no CUDA/model
   fixtures/
 ```

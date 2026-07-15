@@ -16,3 +16,8 @@ models/
 # Session artifacts (planning notes, hand-offs) — local scratch, not pushed
 /plan/
 /hand-off-*.md
+
+# Benchmark (susurro-bench): scripts are committed (shared, reviewable text);
+# recordings are the owner's personal voice and results are regenerated output.
+/bench/recordings/
+/bench/results/
