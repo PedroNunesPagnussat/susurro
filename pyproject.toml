@@ -21,8 +21,7 @@ susurro-bench = "susurro.bench.cli:main"
 
 # The benchmark's extra runtimes live here, NOT in core `dependencies`: the daemon's
 # footprint and CUDA/CTranslate2 ABI stay untouched. Install with `uv sync --extra bench`.
-# jiwer (WER/CER scoring) lands now; whisper.cpp (pywhispercpp) and Parakeet (NeMo)
-# join in Steps 6-7.
+# jiwer (WER/CER scoring) and the optional whisper.cpp runtime (pywhispercpp) live here.
 [project.optional-dependencies]
 bench = [
     "jiwer>=3",
@@ -32,9 +31,6 @@ bench = [
 # it: `uv sync --extra bench --extra bench-whispercpp`.
 bench-whispercpp = [
     "pywhispercpp>=1.2",
-]
-bench-parakeet = [
-    "nemo-toolkit[asr]>=2.0",
 ]
 
 [dependency-groups]

@@ -207,8 +207,8 @@ uv run ruff check src tests
 `susurro-bench` measures which model/runtime is most accurate and fastest **on your
 own hardware and voice** (published benchmarks use other speakers, GPUs, and
 precisions). It records you reading a fixed set of scripts, runs every available
-model (faster-whisper `large-v3-turbo`/`large-v3`, optionally whisper.cpp and NeMo
-Parakeet), and prints a comparable WER + latency/RTF table.
+model (faster-whisper `large-v3-turbo`/`large-v3`, optionally whisper.cpp), and
+prints a comparable WER + latency/RTF table.
 
 ```sh
 uv sync --extra bench                 # scoring + faster-whisper contenders
@@ -239,7 +239,7 @@ src/susurro/
   bench/          # susurro-bench: offline model benchmark (optional extras)
     transcriber.py  # Transcriber protocol (the common backend seam)
     registry.py     # id -> ModelSpec map (lazy build + import-probe availability)
-    faster_whisper_backend.py  whispercpp_backend.py  parakeet_backend.py
+    faster_whisper_backend.py  whispercpp_backend.py
     recording.py    # `record`: guided capture + pure save_wav / planner
     wer.py          # WER/CER scoring via jiwer (normalized + raw + CER)
     runner.py       # `run`: measure (warm-up discarded, median of N) + score + report

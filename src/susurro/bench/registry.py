@@ -9,8 +9,8 @@ cheap and side-effect-free. Building a real backend happens only inside `build()
 i.e. only when a run actually selects that model.
 
 Ordered so the baseline (`fw-large-v3-turbo`) is first, which the report relies on.
-The two faster-whisper ids are registered now; whisper.cpp (Step 6) and Parakeet
-(Step 7) slot in below when their backends land.
+The two faster-whisper ids and the optional whisper.cpp backend are registered; each
+backend's availability is a pure import probe, so an uninstalled runtime just skips.
 """
 
 from __future__ import annotations
@@ -66,21 +66,9 @@ def _build_whispercpp(model_name: str) -> Callable[[], Transcriber]:
     return build
 
 
-def _build_parakeet(model_name: str) -> Callable[[], Transcriber]:
-    """Lazy factory for the Parakeet backend: imports NeMo (the optional runtime,
-    which pulls torch) only when called, never at registry import."""
-
-    def build() -> Transcriber:
-        from .parakeet_backend import ParakeetTranscriber
-
-        return ParakeetTranscriber(model_name)
-
-    return build
-
-
 # Insertion order is the report order: baseline turbo first, then large-v3.
-# whisper.cpp / Parakeet register here in Steps 6-7 with their own lazy factory +
-# import-probe availability, so an uninstalled runtime simply reports unavailable.
+# whisper.cpp registers here with its own lazy factory + import-probe availability,
+# so an uninstalled runtime simply reports unavailable.
 REGISTRY: dict[str, ModelSpec] = {
     "fw-large-v3-turbo": ModelSpec(
         id="fw-large-v3-turbo",
@@ -99,12 +87,6 @@ REGISTRY: dict[str, ModelSpec] = {
         label="whisper.cpp large-v3-turbo (GGUF)",
         build=_build_whispercpp("large-v3-turbo"),
         available=lambda: _importable("pywhispercpp"),
-    ),
-    "parakeet-tdt-0.6b-v2": ModelSpec(
-        id="parakeet-tdt-0.6b-v2",
-        label="NVIDIA Parakeet-TDT 0.6B v2 (NeMo, English-only)",
-        build=_build_parakeet("nvidia/parakeet-tdt-0.6b-v2"),
-        available=lambda: _importable("nemo"),
     ),
 }
 

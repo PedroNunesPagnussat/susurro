@@ -18,10 +18,10 @@ default (`large-v3-turbo`).
 | `fw-large-v3-turbo` | faster-whisper (int8/CUDA) | the current default / baseline |
 | `fw-large-v3` | faster-whisper (int8/CUDA) | bigger, slower; is it more accurate? |
 | `whispercpp-turbo` | whisper.cpp GGUF (pywhispercpp) | a different runtime for the same model |
-| `parakeet-tdt-0.6b-v2` | NVIDIA NeMo | non-Whisper architecture, English-only |
 
-Parakeet-v2 is English-only, which is why the whole benchmark is English-only: a
-head-to-head needs one shared set. Portuguese/bilingual evaluation is out of scope.
+The benchmark is English-only: a head-to-head needs one shared script set, and
+English is the owner's dictation default. Portuguese/bilingual evaluation is out of
+scope.
 
 ## Install
 
@@ -31,7 +31,6 @@ CUDA/CTranslate2 ABI stay untouched. Install only what you want to measure:
 ```bash
 uv sync --extra bench                       # scoring (jiwer) + the two faster-whisper models
 uv sync --extra bench --extra bench-whispercpp   # + whisper.cpp
-uv sync --extra bench --extra bench-parakeet      # + Parakeet (pulls torch via NeMo)
 ```
 
 A runtime you don't install is simply skipped (see `--list-models`); it never blocks
@@ -99,10 +98,10 @@ concentrated in the numbers script.
 
 ## Results & the decision
 
-> **Status: pending the owner's recordings + the two heavy runtimes.**
+> **Status: pending the owner's recordings + the whisper.cpp runtime.**
 > The head-to-head below needs `bench/recordings/` populated (your voice) and
-> `whispercpp-turbo` + `parakeet-tdt-0.6b-v2` installed. Record, run, then paste the
-> generated table here and fill in the call.
+> `whispercpp-turbo` installed. Record, run, then paste the generated table here and
+> fill in the call.
 
 Fill this in after `susurro-bench run` over your recordings:
 
@@ -111,7 +110,6 @@ Fill this in after `susurro-bench run` over your recordings:
 | fw-large-v3-turbo | | | | | | |
 | fw-large-v3 | | | | | | |
 | whispercpp-turbo | | | | | | |
-| parakeet-tdt-0.6b-v2 | | | | | | |
 
 **How to make the keep-or-switch call:**
 

@@ -61,31 +61,6 @@ def test_whispercpp_backend_is_registered_and_import_probed():
         registry.importlib.util.find_spec = real
 
 
-def test_parakeet_backend_is_registered_and_import_probed():
-    # The optional Parakeet (NeMo) backend: availability is a `nemo` import probe, so
-    # an uninstalled NeMo stack reports unavailable and is skipped, never a crash.
-    spec = registry.REGISTRY["parakeet-tdt-0.6b-v2"]
-    assert "parakeet" in spec.label.lower()
-
-    import importlib.util
-
-    real = importlib.util.find_spec
-
-    def fake_find_spec(name):
-        return None if name == "nemo" else real(name)
-
-    registry.importlib.util.find_spec = fake_find_spec
-    try:
-        assert spec.available() is False
-    finally:
-        registry.importlib.util.find_spec = real
-    registry.importlib.util.find_spec = lambda _name: object()
-    try:
-        assert spec.available() is True
-    finally:
-        registry.importlib.util.find_spec = real
-
-
 def test_resolve_selects_only_the_requested_ids_preserving_order():
     specs = registry.resolve(["fw-large-v3", "fw-large-v3-turbo"])
     # resolve keeps registry order, not the argument order.

@@ -3,7 +3,7 @@
 `Transcriber` is a `runtime_checkable Protocol` mirroring `Formatter`
 (`src/susurro/formatter.py:20`) and `_ManagedEngine` (`src/susurro/daemon.py`): a
 structural type so the runner stays backend-blind (no per-backend if/elif). Every
-backend — faster-whisper, whisper.cpp, Parakeet — satisfies it by having a `name`
+backend — faster-whisper, whisper.cpp — satisfies it by having a `name`
 and a `transcribe`.
 """
 
