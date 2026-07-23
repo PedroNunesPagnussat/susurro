@@ -22,7 +22,6 @@ class WhisperCppTranscriber:
     def __init__(self, model_name: str = "large-v3-turbo", *, language: str = "en") -> None:
         from pywhispercpp.model import Model  # lazy: optional runtime
 
-        self.name = f"whispercpp-{model_name}"
         self._formatter = RuleBasedFormatter()
         # pywhispercpp resolves the GGUF by shorthand name (downloading once) and
         # keeps it resident; the quiet flags stop it printing per-segment progress.

@@ -48,3 +48,9 @@ packages = ["src/susurro"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+# The code targets ~100 cols (deliberate multi-line signatures); pin the formatter
+# to match so `ruff format` doesn't rewrap them to its 88-col default. Only affects
+# formatting — the default lint rule set (no E501) is unchanged.
+line-length = 100

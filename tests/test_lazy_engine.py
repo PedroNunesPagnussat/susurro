@@ -83,6 +83,7 @@ def test_unload_when_already_unloaded_is_noop():
 
 # --- load (build-only preload) --------------------------------------------
 
+
 def test_load_builds_inner_engine_once():
     factory, builds = _factory_spy()
     engine = LazyEngine(factory)
@@ -117,6 +118,7 @@ def test_load_then_transcribe_does_not_rebuild():
 
 
 # --- language -------------------------------------------------------------
+
 
 def test_ctor_language_is_applied_on_first_load():
     factory, builds = _factory_spy()

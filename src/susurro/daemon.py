@@ -115,7 +115,9 @@ class Daemon:
         # A managed engine can be idle-unloaded and preloaded; a plain one can't.
         # Hold the narrowed reference (not just a bool) so the load/unload calls need
         # no casts: `self._managed is None` means the capability is absent.
-        self._managed: _ManagedEngine | None = engine if isinstance(engine, _ManagedEngine) else None
+        self._managed: _ManagedEngine | None = (
+            engine if isinstance(engine, _ManagedEngine) else None
+        )
         # Idle-unload needs a managed (unloadable) engine; disable it otherwise.
         self._idle_timeout_s = idle_timeout_s if self._managed is not None else None
         self._clock = clock
@@ -292,8 +294,15 @@ def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
     try:
         conn, _ = srv.accept()
     except TimeoutError:
-        daemon.check_timeout()  # safety window elapsed with no stop
-        daemon.check_idle()  # idle window elapsed -> free VRAM
+        # The auto-stop runs the same fallible stop() the command path does
+        # (transcribe/inject), so guard it the same way: a failed auto-stop must
+        # log and abort, never crash the loop and take the daemon down.
+        try:
+            daemon.check_timeout()  # safety window elapsed with no stop
+            daemon.check_idle()  # idle window elapsed -> free VRAM
+        except Exception as exc:  # noqa: BLE001 (keep the daemon alive)
+            print(f"susurro: auto-stop/idle check failed: {exc}", file=sys.stderr, flush=True)
+            daemon.abort()  # never leave the mic stuck open on an error
         return
     with conn:
         # accept() does *not* pass its timeout to the connection (it's forced

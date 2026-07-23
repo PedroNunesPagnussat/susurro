@@ -140,11 +140,7 @@ def list_input_devices() -> list[tuple[int, str]]:
     """Return (index, name) for every device that can capture audio."""
     import sounddevice as sd
 
-    return [
-        (i, d["name"])
-        for i, d in enumerate(sd.query_devices())
-        if d["max_input_channels"] > 0
-    ]
+    return [(i, d["name"]) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
 
 
 def load_wav(path: str | Path) -> np.ndarray:

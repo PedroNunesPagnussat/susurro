@@ -16,6 +16,7 @@ FIXTURE = Path(__file__).parent / "fixtures" / "jfk_16k_mono.wav"
 
 # --- _WindowBuffer ---------------------------------------------------------
 
+
 def test_buffer_concatenates_mono_blocks_in_order():
     buf = _WindowBuffer()
     buf.add(np.array([[0.1], [0.2]], dtype=np.float32))
@@ -74,6 +75,7 @@ def test_buffer_cap_none_keeps_everything():
 
 
 # --- Recorder (hardware-free guards; start/stop need a mic) ----------------
+
 
 def test_recorder_not_recording_initially():
     assert Recorder().recording is False
@@ -143,6 +145,7 @@ def test_recorder_closes_stream_if_start_raises(monkeypatch):
 
 
 # --- load_wav --------------------------------------------------------------
+
 
 def test_load_wav_returns_mono_float32_in_unit_range():
     audio = load_wav(FIXTURE)

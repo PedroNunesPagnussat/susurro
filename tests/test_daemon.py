@@ -118,8 +118,13 @@ class SpyNotifier:
 
 
 def _make(
-    recorder=None, engine=None, max_record_s=30.0, clock=None, idle_timeout_s=None,
-    language="en", notify=None,
+    recorder=None,
+    engine=None,
+    max_record_s=30.0,
+    clock=None,
+    idle_timeout_s=None,
+    language="en",
+    notify=None,
 ):
     recorder = recorder or FakeRecorder()
     engine = engine or FakeEngine()
@@ -139,6 +144,7 @@ def _make(
 
 
 # --- happy path ------------------------------------------------------------
+
 
 def test_start_then_stop_transcribes_and_injects():
     daemon, recorder, engine, injected = _make()
@@ -164,6 +170,7 @@ def test_empty_transcript_is_not_injected():
 
 
 # --- no-op / robustness ----------------------------------------------------
+
 
 def test_stop_without_start_is_noop():
     daemon, recorder, engine, injected = _make()
@@ -200,6 +207,7 @@ def test_stop_resets_to_idle_even_if_engine_raises():
 
 
 # --- safety timeout --------------------------------------------------------
+
 
 def test_check_timeout_does_not_fire_before_deadline():
     clock = FakeClock()
@@ -244,6 +252,7 @@ def test_late_stop_after_auto_stop_is_noop():
 
 # --- remaining -------------------------------------------------------------
 
+
 def test_remaining_counts_down_and_is_none_when_idle():
     clock = FakeClock()
     daemon, _recorder, _engine, _injected = _make(max_record_s=30.0, clock=clock)
@@ -257,6 +266,7 @@ def test_remaining_counts_down_and_is_none_when_idle():
 
 
 # --- idle unload -----------------------------------------------------------
+
 
 def _make_managed(idle_timeout_s=60.0, clock=None):
     clock = clock or FakeClock()
@@ -340,6 +350,7 @@ def test_transcribe_reloads_after_idle_unload():
 
 # --- preload on key-press --------------------------------------------------
 
+
 def test_press_reloads_an_unloaded_managed_engine():
     # After an idle-unload, the press must rebuild the model *now* so the load
     # overlaps the hold — engine.loaded is True before any stop() runs.
@@ -422,6 +433,7 @@ def test_plain_engine_never_unloads():
 
 # --- notifications ---------------------------------------------------------
 
+
 def test_start_raises_recording_toast():
     spy = SpyNotifier()
     daemon, _recorder, _engine, _injected = _make(notify=spy)
@@ -470,6 +482,7 @@ def test_toast_is_cleared_even_if_engine_raises():
 
 # --- language --------------------------------------------------------------
 
+
 def test_set_language_updates_engine_and_posts_toast():
     spy = SpyNotifier()
     daemon, _recorder, engine, _injected = _make(notify=spy)
@@ -507,6 +520,7 @@ def test_daemon_boots_into_the_given_language():
 
 # --- dispatch --------------------------------------------------------------
 
+
 def test_dispatch_lang_with_code_sets_explicit():
     daemon, _recorder, engine, _injected = _make(language="en")
     _dispatch(daemon, "lang pt")
@@ -542,11 +556,17 @@ def test_dispatch_unknown_verb_warns_and_changes_nothing(capsys):
 
 # --- CLI over config precedence (_apply_cli) -------------------------------
 
+
 def _args(**over):
     """A parsed-args stand-in: every flag defaults to its "not passed" sentinel."""
     base = dict(
-        model=None, device=None, cpu=False, lang=None,
-        max_record=None, idle_timeout=None, no_notify=False,
+        model=None,
+        device=None,
+        cpu=False,
+        lang=None,
+        max_record=None,
+        idle_timeout=None,
+        no_notify=False,
     )
     base.update(over)
     return argparse.Namespace(**base)
@@ -559,7 +579,9 @@ def test_apply_cli_no_flags_leaves_config_untouched():
 
 def test_apply_cli_flags_override_config_values():
     config = Config()
-    out = _apply_cli(config, _args(model="medium", lang="pt", device=3, max_record=90.0, idle_timeout=0.0))
+    out = _apply_cli(
+        config, _args(model="medium", lang="pt", device=3, max_record=90.0, idle_timeout=0.0)
+    )
     assert out.engine.model == "medium"
     assert out.engine.language == "pt"
     assert out.audio.device == 3

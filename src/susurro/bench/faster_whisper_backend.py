@@ -27,7 +27,6 @@ class FasterWhisperTranscriber:
         # Engine's default RuleBasedFormatter (whitespace trim/collapse only) is
         # exactly the "what gets typed" text we want to score; the scorer owns the
         # heavier WER normalization (Step 4), so no extra cleanup belongs here.
-        self.name = f"fw-{model_name}"
         self._engine = Engine(model_name, device=device, compute_type="int8")
 
     def transcribe(self, audio: np.ndarray) -> str:

@@ -28,6 +28,7 @@ def _write(path, text):
 
 # --- defaults --------------------------------------------------------------
 
+
 def test_missing_default_file_yields_all_defaults(tmp_path, monkeypatch):
     # Point the default at a path that doesn't exist so we exercise the missing-file
     # branch (not the real repo-local config.toml).
@@ -104,7 +105,7 @@ def test_full_file_maps_every_value(tmp_path):
 
 
 def test_partial_file_overrides_only_named_values(tmp_path):
-    cfg = load_config(_write(tmp_path / "c.toml", "[engine]\nlanguage = \"pt\"\n"))
+    cfg = load_config(_write(tmp_path / "c.toml", '[engine]\nlanguage = "pt"\n'))
     assert cfg.engine.language == "pt"  # overridden
     assert cfg.engine.model == "large-v3-turbo"  # untouched -> default
     assert cfg.audio == AudioConfig()  # whole table absent -> defaults
@@ -129,6 +130,7 @@ def test_idle_timeout_accepts_zero_and_negative(tmp_path):
 
 
 # --- fail loud -------------------------------------------------------------
+
 
 def test_missing_explicit_file_is_an_error(tmp_path):
     with pytest.raises(ConfigError, match="not found"):
@@ -193,6 +195,7 @@ def test_section_must_be_a_table(tmp_path):
 
 # --- forward-compatible: unknown keys/tables warn, don't fail ---------------
 
+
 def test_unknown_key_warns_and_is_ignored(tmp_path, capsys):
     p = _write(tmp_path / "c.toml", '[engine]\nfuture_knob = 1\nlanguage = "pt"\n')
     cfg = load_config(p)
@@ -209,6 +212,7 @@ def test_unknown_table_warns_and_is_ignored(tmp_path, capsys):
 
 
 # --- default path ----------------------------------------------------------
+
 
 def test_default_config_path_is_repo_local():
     # Derived from the test file's own location (tests/ -> repo root), independently

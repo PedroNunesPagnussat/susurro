@@ -53,12 +53,16 @@ def score(reference: str, hypothesis: str) -> Score:
     normalization first."""
     return Score(
         norm_wer=jiwer.wer(
-            reference, hypothesis,
-            reference_transform=_NORM_WORDS, hypothesis_transform=_NORM_WORDS,
+            reference,
+            hypothesis,
+            reference_transform=_NORM_WORDS,
+            hypothesis_transform=_NORM_WORDS,
         ),
         raw_wer=jiwer.wer(reference, hypothesis),
         cer=jiwer.cer(
-            reference, hypothesis,
-            reference_transform=_NORM_CHARS, hypothesis_transform=_NORM_CHARS,
+            reference,
+            hypothesis,
+            reference_transform=_NORM_CHARS,
+            hypothesis_transform=_NORM_CHARS,
         ),
     )

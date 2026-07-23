@@ -37,8 +37,10 @@ def inject(text: str, *, timeout_s: float = _TIMEOUT_S) -> None:
     if not text.strip():
         return
     try:
+        # `--` ends wtype's option parsing so a transcript starting with `-` is
+        # typed literally, not misread as a flag (man wtype: `... -- [TEXT]...`).
         proc = subprocess.run(
-            ["wtype", text], capture_output=True, text=True, timeout=timeout_s
+            ["wtype", "--", text], capture_output=True, text=True, timeout=timeout_s
         )
     except (OSError, subprocess.SubprocessError) as exc:  # missing binary / hung spawn
         print(f"susurro: wtype failed: {exc}", file=sys.stderr, flush=True)

@@ -59,6 +59,14 @@ class BoomDaemon(FakeDaemon):
         raise RuntimeError("boom")
 
 
+class BoomTimeoutDaemon(FakeDaemon):
+    """The auto-stop transcribe blows up: check_timeout raises like a real
+    recorder/engine failure would on the safety-window path."""
+
+    def check_timeout(self):
+        raise RuntimeError("boom")
+
+
 def _server(tmp_path) -> socket.socket:
     srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     srv.bind(str(tmp_path / "susurro.sock"))
@@ -73,6 +81,7 @@ def _connect(tmp_path) -> socket.socket:
 
 
 # --- _serve_once -----------------------------------------------------------
+
 
 def test_serve_once_dispatches_a_command(tmp_path):
     srv = _server(tmp_path)
@@ -97,6 +106,19 @@ def test_serve_once_timeout_runs_safety_and_idle_checks(tmp_path):
     finally:
         srv.close()
     assert daemon.events == ["check_timeout", "check_idle"]
+
+
+def test_serve_once_survives_a_raising_auto_stop(tmp_path, capsys):
+    # A failing auto-stop (transcribe/recorder error on the safety-window path) must
+    # be caught and aborted, exactly like a failing command — never crash the loop.
+    srv = _server(tmp_path)
+    daemon = BoomTimeoutDaemon(remaining=0.05)  # no client -> the 0.05s deadline fires
+    try:
+        _serve_once(srv, daemon)
+    finally:
+        srv.close()
+    assert daemon.events == ["abort"]
+    assert "failed" in capsys.readouterr().err
 
 
 def test_serve_once_drops_a_silent_client(tmp_path, monkeypatch, capsys):
@@ -143,6 +165,7 @@ def test_serve_once_ignores_blank_command(tmp_path):
 
 
 # --- serve() setup / teardown ---------------------------------------------
+
 
 def test_serve_clears_stale_socket_and_cleans_up(tmp_path, monkeypatch):
     # A stale socket file from a crashed prior daemon must be unlinked before bind,

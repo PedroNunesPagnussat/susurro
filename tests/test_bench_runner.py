@@ -45,8 +45,7 @@ class FakeTranscriber:
     the shared clock by the next duration, so the runner's perf_counter deltas are
     exactly those durations (warm-up first, then the N timed runs)."""
 
-    def __init__(self, name, clock, durations, transcript="hello world", fail=False):
-        self.name = name
+    def __init__(self, clock, durations, transcript="hello world", fail=False):
         self._clock = clock
         self._durations = list(durations)
         self._transcript = transcript
@@ -108,7 +107,7 @@ def test_discards_warmup_and_keeps_median_of_n_timed_runs():
     audio = np.zeros(SAMPLE_RATE * 2, dtype=np.float32)  # exactly 2.0s
     clip = Clip(id="clip", reference="hello world", audio=audio)
     # warm-up 9.0 (discarded), then timed 0.2 / 0.5 / 0.3 -> median 0.3.
-    fake = FakeTranscriber("fw-fake", clock, durations=[9.0, 0.2, 0.5, 0.3])
+    fake = FakeTranscriber(clock, durations=[9.0, 0.2, 0.5, 0.3])
 
     result = run_models([clip], [_spec(fake)], timed_runs=3, timer=clock)
 
@@ -120,8 +119,10 @@ def test_discards_warmup_and_keeps_median_of_n_timed_runs():
 
 def test_scores_the_captured_transcript_with_the_real_scorer():
     clock = FakeClock()
-    clip = Clip(id="clip", reference="the quick brown fox", audio=np.zeros(SAMPLE_RATE, dtype=np.float32))
-    fake = FakeTranscriber("fw-fake", clock, durations=[1.0, 0.1, 0.1, 0.1], transcript="the quick brown cat")
+    clip = Clip(
+        id="clip", reference="the quick brown fox", audio=np.zeros(SAMPLE_RATE, dtype=np.float32)
+    )
+    fake = FakeTranscriber(clock, durations=[1.0, 0.1, 0.1, 0.1], transcript="the quick brown cat")
 
     result = run_models([clip], [_spec(fake)], timed_runs=3, timer=clock)
 
@@ -133,7 +134,7 @@ def test_scores_the_captured_transcript_with_the_real_scorer():
 def test_load_time_is_measured_separately_from_latency():
     clock = FakeClock()
     clip = Clip(id="clip", reference="hi", audio=np.zeros(SAMPLE_RATE, dtype=np.float32))
-    fake = FakeTranscriber("fw-fake", clock, durations=[1.0, 0.1, 0.1, 0.1])
+    fake = FakeTranscriber(clock, durations=[1.0, 0.1, 0.1, 0.1])
 
     result = run_models([clip], [_spec(fake, load_dt=2.5, clock=clock)], timed_runs=3, timer=clock)
 
@@ -155,7 +156,7 @@ def test_aggregates_wer_as_median_across_clips():
             # first clip's 4 calls -> perfect; second clip's -> one wrong word.
             return "hello world" if self.calls <= 4 else "hello mars"
 
-    fake = TwoClipFake("fw-fake", clock, durations=[0.1] * 8)
+    fake = TwoClipFake(clock, durations=[0.1] * 8)
     result = run_models(clips, [_spec(fake)], timed_runs=3, timer=clock)
 
     assert result.models[0].norm_wer == pytest.approx(0.25)
@@ -167,7 +168,7 @@ def test_aggregates_wer_as_median_across_clips():
 def test_build_failure_skips_model_and_the_rest_still_report():
     clock = FakeClock()
     clip = Clip("c", "hello world", np.zeros(SAMPLE_RATE, dtype=np.float32))
-    good = FakeTranscriber("fw-good", clock, durations=[1.0, 0.1, 0.1, 0.1])
+    good = FakeTranscriber(clock, durations=[1.0, 0.1, 0.1, 0.1])
     specs = [
         _spec(good, id="fw-broken", label="broken", fail_build=True),
         _spec(good, id="fw-good", label="good"),
@@ -200,7 +201,7 @@ def test_single_clip_error_is_isolated_not_a_whole_run_abort():
                 raise RuntimeError("clip blew up")
             return "hello world"
 
-    fake = FailSecondClip("fw-fake", clock, durations=[0.1] * 8)
+    fake = FailSecondClip(clock, durations=[0.1] * 8)
     result = run_models(clips, [_spec(fake)], timed_runs=3, timer=clock)
 
     cells = {c.clip_id: c for c in result.models[0].cells}
@@ -220,8 +221,8 @@ def _table_body(report: str) -> str:
 def test_report_keeps_spec_order_and_headers_the_clip_count():
     clock = FakeClock()
     clip = Clip("c", "hello world", np.zeros(SAMPLE_RATE * 2, dtype=np.float32))
-    a = FakeTranscriber("fw-a", clock, durations=[1.0, 0.1, 0.1, 0.1])
-    b = FakeTranscriber("fw-b", clock, durations=[1.0, 0.1, 0.1, 0.1])
+    a = FakeTranscriber(clock, durations=[1.0, 0.1, 0.1, 0.1])
+    b = FakeTranscriber(clock, durations=[1.0, 0.1, 0.1, 0.1])
     specs = [_spec(a, id="fw-baseline", label="baseline"), _spec(b, id="fw-other", label="other")]
 
     result = run_models([clip], specs, timed_runs=3, timer=clock)
@@ -239,9 +240,13 @@ def test_report_over_the_committed_jfk_fixture_produces_a_full_row():
     clock = FakeClock()
     audio = load_wav(FIXTURE)
     clip = Clip("jfk", "and so my fellow americans", audio)
-    fake = FakeTranscriber("fw-fake", clock, durations=[9.0, 0.4, 0.4, 0.4], transcript="and so my fellow americans")
+    fake = FakeTranscriber(
+        clock, durations=[9.0, 0.4, 0.4, 0.4], transcript="and so my fellow americans"
+    )
 
-    result = run_models([clip], [_spec(fake, id="fw-large-v3-turbo", label="turbo")], timed_runs=3, timer=clock)
+    result = run_models(
+        [clip], [_spec(fake, id="fw-large-v3-turbo", label="turbo")], timed_runs=3, timer=clock
+    )
     report = format_report(result)
 
     assert "fw-large-v3-turbo" in report

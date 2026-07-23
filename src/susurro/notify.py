@@ -71,7 +71,11 @@ class Notifier:
         # so it's a quick standalone toast (you switch while not recording).
         name = _LANG_NAMES.get(code, code)
         _send(
-            "-t", "2000", "-u", "low", f"🌐 Susurro: Transcribing to {name}",
+            "-t",
+            "2000",
+            "-u",
+            "low",
+            f"🌐 Susurro: Transcribing to {name}",
             timeout=self._timeout_s,
         )
 

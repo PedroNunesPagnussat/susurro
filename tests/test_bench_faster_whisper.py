@@ -34,7 +34,6 @@ def test_adapter_is_a_transcriber_and_transcribes_known_speech():
 
     backend = FasterWhisperTranscriber("large-v3-turbo")
     assert isinstance(backend, Transcriber)  # satisfies the runner's contract
-    assert backend.name == "fw-large-v3-turbo"
 
     text = backend.transcribe(load_wav(FIXTURE)).lower()
     assert "country" in text

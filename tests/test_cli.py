@@ -15,7 +15,9 @@ from susurro.__main__ import _build_parser as build_main_parser
 from susurro.daemon import _build_parser as build_daemon_parser
 
 
-@pytest.mark.parametrize(("value", "expected"), [("4", 4), ("0", 0), ("hw:1", "hw:1"), ("USB mic", "USB mic")])
+@pytest.mark.parametrize(
+    ("value", "expected"), [("4", 4), ("0", 0), ("hw:1", "hw:1"), ("USB mic", "USB mic")]
+)
 def test_parse_device_int_vs_name(value, expected):
     assert _cli.parse_device(value) == expected
 

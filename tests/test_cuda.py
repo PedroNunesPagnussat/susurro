@@ -55,7 +55,9 @@ def test_stops_when_no_further_progress(monkeypatch):
         if "bad" in path:
             raise OSError("never loads")
 
-    _patch(monkeypatch, libdirs=["/fake"], glob_returns=["/fake/bad.so", "/fake/good.so"], cdll=cdll)
+    _patch(
+        monkeypatch, libdirs=["/fake"], glob_returns=["/fake/bad.so", "/fake/good.so"], cdll=cdll
+    )
     assert _cuda.preload_cuda_libs() == ["/fake/good.so"]
 
 

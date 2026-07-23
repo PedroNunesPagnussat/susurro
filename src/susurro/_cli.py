@@ -36,10 +36,15 @@ def add_common_flags(parser: argparse.ArgumentParser) -> None:
     built-in defaults < config file < CLI flag."""
     parser.add_argument("--config", default=None, help="path to config.toml")
     parser.add_argument("--model", default=None, help="faster-whisper model name")
-    parser.add_argument("--device", type=parse_device, default=None, help="input device index or name")
+    parser.add_argument(
+        "--device", type=parse_device, default=None, help="input device index or name"
+    )
     parser.add_argument("--cpu", action="store_true", help="use CPU instead of CUDA")
     parser.add_argument(
-        "--lang", "--language", dest="lang", default=None,
+        "--lang",
+        "--language",
+        dest="lang",
+        default=None,
         help="transcription language code (e.g. en, pt)",
     )
 

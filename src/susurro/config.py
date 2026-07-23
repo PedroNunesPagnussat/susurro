@@ -119,6 +119,7 @@ def load_config(path: str | Path | None = None) -> Config:
 
 # --- validators: value -> coerced value, or raise _Invalid("must be …") -----
 
+
 def _str(v: object) -> str:
     if not isinstance(v, str):
         raise _Invalid("must be a string")

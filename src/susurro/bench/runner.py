@@ -82,9 +82,7 @@ def _default_log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def discover_clips(
-    scripts_dir: Path, recordings_dir: Path
-) -> tuple[list[Clip], list[str]]:
+def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip], list[str]]:
     """Pair `scripts/<id>.txt` (reference) with `recordings/<id>.wav` (audio) by
     shared stem, in script order. Returns `(clips, warnings)`: a script with no
     recording is skipped with a warning, and an orphan recording (no script) warns
@@ -191,9 +189,13 @@ def run_models(
         load_s = timer() - t0
         cells = [
             _measure_clip(
-                backend, clip,
-                timed_runs=timed_runs, warmup=warmup, timer=timer,
-                sample_rate=sample_rate, log=log,
+                backend,
+                clip,
+                timed_runs=timed_runs,
+                warmup=warmup,
+                timer=timer,
+                sample_rate=sample_rate,
+                log=log,
             )
             for clip in clips
         ]

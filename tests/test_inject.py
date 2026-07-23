@@ -1,7 +1,7 @@
 """Unit tests for the injection seam (`susurro.inject.inject`).
 
 `wtype` is external and Wayland-only, so `subprocess.run` is patched. We assert
-the command built (`["wtype", text]`), the empty/whitespace no-op (no subprocess
+the command built (`["wtype", "--", text]`), the empty/whitespace no-op (no subprocess
 call at all), and the never-crash-*or*-wedge-the-daemon contract: a non-zero
 return, a missing binary, and a hung spawn (timeout) are all surfaced on stderr
 without raising, and a spawn timeout is always passed.
@@ -21,7 +21,8 @@ def test_inject_runs_wtype_with_text():
         inject("hello world")
     run.assert_called_once()
     (cmd,), _kwargs = run.call_args
-    assert cmd == ["wtype", "hello world"]
+    # `--` ends option parsing so a leading-dash transcript can't be read as a flag.
+    assert cmd == ["wtype", "--", "hello world"]
 
 
 @pytest.mark.parametrize("text", ["", "   ", "\n\t "])
