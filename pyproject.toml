@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Local, fully-offline voice dictation for Linux/Wayland/Hyprland"
 readme = "README.md"
 requires-python = ">=3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Pedro Nunes Pagnussat" }]
 dependencies = [
     "faster-whisper>=1.1.0",
     "sounddevice>=0.4.6",

@@ -21,3 +21,4 @@ models/
 # recordings are the owner's personal voice and results are regenerated output.
 /bench/recordings/
 /bench/results/
+/bench/cleanup/
