@@ -18,10 +18,10 @@ import time
 
 import numpy as np
 
-from ._cli import add_common_flags, apply_engine_audio, positive_float
+from ._cli import add_common_flags, apply_engine_audio, log, positive_float
 from .audio import Recorder, list_input_devices
 from .config import ConfigError, load_config
-from .engine import Engine
+from .engine import Engine, is_supported_language
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -53,10 +53,17 @@ def main(argv: list[str] | None = None) -> int:
         # engine/audio ones, so it calls the shared resolver directly.
         config = apply_engine_audio(load_config(args.config), args)
     except ConfigError as exc:
-        print(f"susurro: {exc}", file=sys.stderr, flush=True)
+        log(str(exc))
         return 1
 
     eng, aud = config.engine, config.audio
+    # Same pre-flight the daemon runs: Whisper validates the language deep inside its
+    # tokenizer, so an unchecked typo reaches the warmup below and is reported as a
+    # failed model load. Fails open if faster-whisper's code list can't be read.
+    if not is_supported_language(eng.language):
+        log(f"unsupported language {eng.language!r} — check --lang / [engine] language")
+        return 1
+
     print(f"loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
     try:
         engine = Engine(
@@ -72,11 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:  # noqa: BLE001 (a startup failure gets a message, not a traceback)
         # Typo'd model name, failed download, broken CUDA install: same clean
         # `susurro: …` + exit 1 as a config error, naming the model and device.
-        print(
-            f"susurro: failed to load model {eng.model!r} on {eng.device}: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
+        log(f"failed to load model {eng.model!r} on {eng.device}: {exc}")
         return 1
 
     recorder = Recorder(

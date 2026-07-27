@@ -13,7 +13,9 @@ import pytest
 
 from susurro import _cli
 from susurro.__main__ import _build_parser as build_main_parser
+from susurro.__main__ import main as mic_test_main
 from susurro.daemon import _build_parser as build_daemon_parser
+from susurro.daemon import main as daemon_main
 
 
 @pytest.mark.parametrize(
@@ -98,3 +100,41 @@ def test_daemon_parser_keeps_the_non_positive_idle_timeout_sentinel(value):
 def test_mic_test_parser_rejects_non_finite_duration(value):
     with pytest.raises(SystemExit):
         build_main_parser().parse_args(["--duration", value])
+
+
+# --- startup language pre-flight -------------------------------------------
+#
+# Whisper validates the language inside its tokenizer, i.e. at the warmup transcribe.
+# Left that late, both entrypoints report a typo'd `--lang` through their model-load
+# handler — "failed to load model 'large-v3-turbo' on cuda: 'xx' is not a valid
+# language code (accepted language codes: af, am, ar, ...)" — which blames the model
+# and inlines all 100 codes. Both must reject it before any Engine is built, which is
+# also what makes these tests runnable without CUDA or a model.
+
+
+def _config(tmp_path, body: str = "") -> str:
+    """A throwaway config file, so these never read the repo's own config.toml."""
+    path = tmp_path / "config.toml"
+    path.write_text(body)
+    return str(path)
+
+
+@pytest.mark.parametrize(
+    "entrypoint", [daemon_main, mic_test_main], ids=["susurro-daemon", "susurro"]
+)
+def test_startup_rejects_an_unsupported_lang_flag(entrypoint, tmp_path, capsys):
+    assert entrypoint(["--config", _config(tmp_path), "--lang", "xx"]) == 1
+    err = capsys.readouterr().err
+    assert "xx" in err  # names the offending code, not the model
+    assert "unsupported language" in err
+    assert "is not a valid language code" not in err  # not the model's late error
+
+
+@pytest.mark.parametrize(
+    "entrypoint", [daemon_main, mic_test_main], ids=["susurro-daemon", "susurro"]
+)
+def test_startup_rejects_an_unsupported_config_language(entrypoint, tmp_path, capsys):
+    # Same gap via the other input: `[engine] language` is validated as a string only.
+    config = _config(tmp_path, '[engine]\nlanguage = "english"\n')
+    assert entrypoint(["--config", config]) == 1
+    assert "english" in capsys.readouterr().err

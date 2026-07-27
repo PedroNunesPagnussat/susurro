@@ -65,7 +65,9 @@ with `susurro-daemon --lang pt`.
 A code Whisper doesn't know is rejected at the switch, not one utterance later:
 the daemon keeps the current language and toasts `⚠ unknown language "xx"`. Without
 that check the switch looked like it worked, then the next recording died inside the
-tokenizer and the audio was lost.
+tokenizer and the audio was lost. The same check runs at startup, so a typo in
+`--lang` or `[engine] language` fails loud (exit 1) naming the code, instead of
+surfacing later as a model-load error.
 
 There's also a no-daemon mic test that exercises capture + engine directly:
 

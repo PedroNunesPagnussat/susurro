@@ -120,6 +120,32 @@ def test_discover_skips_a_recording_at_the_wrong_sample_rate(tmp_path):
     assert "48000" in warn_text and str(SAMPLE_RATE) in warn_text
 
 
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [("truncated", b""), ("not-riff", b"not a wav at all")],
+)
+def test_discover_skips_a_recording_that_is_not_a_readable_wav(tmp_path, label, content):
+    # `wave.open` rejects these *before* load_wav's rate/width checks, and with
+    # EOFError / wave.Error rather than ValueError — so they used to escape
+    # `discover_clips` as a traceback and take every good clip down with them. A
+    # 0-byte take is what a Ctrl-C during `save_wav` leaves behind.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    (recs / "b.wav").write_bytes(content)
+
+    clips, warnings = discover_clips(scripts, recs)  # must not raise
+
+    assert [c.id for c in clips] == ["a"]  # the good clip still runs
+    warn_text = " ".join(warnings)
+    assert "b.wav" in warn_text  # EOFError carries no message; the file must be named
+    assert "skipped" in warn_text
+
+
 # --- measurement: warm-up + median-of-N + RTF ------------------------------
 
 

@@ -20,6 +20,7 @@ from __future__ import annotations
 import statistics
 import sys
 import time
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -82,17 +83,17 @@ def _default_log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
-def discover_clips(
-    scripts_dir: Path, recordings_dir: Path, *, sample_rate: int = SAMPLE_RATE
-) -> tuple[list[Clip], list[str]]:
+def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip], list[str]]:
     """Pair `scripts/<id>.txt` (reference) with `recordings/<id>.wav` (audio) by
     shared stem, in script order. Returns `(clips, warnings)`: a script with no
     recording is skipped with a warning, and an orphan recording (no script) warns
     too — neither aborts the run.
 
-    `sample_rate` is both what the recordings must be at and what the runner later
-    divides by for RTF, so a take at another rate is dropped here rather than
-    transcribed at the wrong speed and timed against the wrong duration."""
+    An unreadable or off-format take is dropped the same way, for the same reason:
+    one bad file must not cost the rest of the eval set. `SAMPLE_RATE` is both what
+    the recordings must be at and what the runner later divides by for RTF, so a take
+    at another rate is dropped here rather than transcribed at the wrong speed and
+    timed against the wrong duration."""
     from .recording import recorded_ids, script_ids
 
     ids = script_ids(scripts_dir)
@@ -106,9 +107,17 @@ def discover_clips(
             continue
         reference = (scripts_dir / f"{id_}.txt").read_text().strip()
         try:
-            audio = load_wav(wav, expected_rate=sample_rate)
-        except ValueError as exc:  # wrong rate / not 16-bit: unusable, the rest aren't
-            warnings.append(f"{exc} — skipped")
+            audio = load_wav(wav, expected_rate=SAMPLE_RATE)
+        except ValueError as exc:  # parsed, but unusable: wrong rate / not 16-bit
+            warnings.append(f"{exc} — skipped")  # load_wav already names the file
+            continue
+        except (EOFError, wave.Error) as exc:
+            # Not parseable at all, and raised by `wave.open` *before* load_wav's own
+            # checks — so neither is a ValueError, and both used to escape this loop,
+            # `run_command` and `cli.main` as a traceback that cost every good clip
+            # too. A 0-byte take (Ctrl-C during `save_wav`) raises EOFError with an
+            # empty message, a non-RIFF file raises wave.Error; name the file here.
+            warnings.append(f"{wav}: unreadable WAV ({str(exc) or type(exc).__name__}) — skipped")
             continue
         clips.append(Clip(id=id_, reference=reference, audio=audio))
     for orphan in sorted(recorded - set(ids)):

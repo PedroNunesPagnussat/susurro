@@ -11,9 +11,19 @@ from __future__ import annotations
 
 import argparse
 import math
+import sys
 from dataclasses import replace
 
 from .config import Config, pick
+
+
+def log(msg: str) -> None:
+    """Write one `susurro: …` line to stderr — the single place both entrypoints
+    shape their output, so a config error, a rejected language, a failed model load
+    and the daemon's loop warnings all read the same. Flushed: the daemon is started
+    from Hyprland's `exec-once`, where stderr is a pipe, and a buffered tail would be
+    lost exactly when something went wrong."""
+    print(f"susurro: {msg}", file=sys.stderr, flush=True)
 
 
 def parse_device(value: str) -> int | str:

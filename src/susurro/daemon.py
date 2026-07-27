@@ -31,6 +31,7 @@ from typing import Protocol, runtime_checkable
 import numpy as np
 
 from ._cli import add_common_flags, apply_engine_audio, finite_float, positive_float
+from ._cli import log as _log
 from ._ipc import socket_path
 from .audio import Recorder
 from .config import DEFAULT_MAX_RECORD_S, Config, ConfigError, load_config, pick
@@ -53,13 +54,11 @@ _MAX_ACCEPT_TIMEOUT_S = 3600.0
 # and busy-spin the loop.
 _MIN_ACCEPT_TIMEOUT_S = 0.05
 
-
-def _log(msg: str) -> None:
-    """Module-level counterpart to `Daemon`'s injectable `log` seam: the one place
-    the socket shell's `susurro: …` stderr lines are shaped. The class keeps its own
-    injectable seam (tests silence it with `log=lambda _msg: None`); these functions
-    have no instance to carry one, and their output is what `capsys` asserts on."""
-    print(f"susurro: {msg}", file=sys.stderr, flush=True)
+# `_log` (imported above as `_cli.log`) is the module-level counterpart to `Daemon`'s
+# injectable `log` seam, and is shared with the mic test so both entrypoints shape
+# their `susurro: …` stderr lines identically. The class keeps its own injectable
+# seam (tests silence it with `log=lambda _msg: None`); the module-level functions
+# here have no instance to carry one, and their output is what `capsys` asserts on.
 
 
 class _Capturer(Protocol):
@@ -470,6 +469,16 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     eng, aud, dae = config.engine, config.audio, config.daemon
+    # Check the startup language the same way the live `lang` switch does, and for the
+    # same reason: Whisper only validates it inside the tokenizer. Left to the model,
+    # a typo'd `--lang` surfaces from the warmup transcribe below and gets reported by
+    # the model-load handler — blaming the model name and inlining all 100 accepted
+    # codes. Fails open (see `is_supported_language`), so a moved private name in
+    # faster-whisper can't turn this into a startup block.
+    if not is_supported_language(eng.language):
+        _log(f"unsupported language {eng.language!r} — check --lang / [engine] language")
+        return 1
+
     idle_timeout = dae.idle_timeout_s if dae.idle_timeout_s > 0 else None
 
     print(f"susurro daemon: loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
