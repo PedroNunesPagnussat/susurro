@@ -99,6 +99,27 @@ def test_discover_pairs_scripts_and_recordings_by_stem(tmp_path):
     assert "d" in warn_text  # orphan recording is flagged
 
 
+def test_discover_skips_a_recording_at_the_wrong_sample_rate(tmp_path):
+    # An off-rate take can't be scored: no backend resamples, and RTF divides by the
+    # harness rate. Drop it with a warning naming the file and both rates rather than
+    # transcribe it at the wrong speed — and keep the rest of the eval set running.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    save_wav(recs / "b.wav", np.zeros(48_000, dtype=np.float32), sample_rate=48_000)
+
+    clips, warnings = discover_clips(scripts, recs)
+
+    assert [c.id for c in clips] == ["a"]  # the good clip still runs
+    warn_text = " ".join(warnings)
+    assert "b.wav" in warn_text
+    assert "48000" in warn_text and str(SAMPLE_RATE) in warn_text
+
+
 # --- measurement: warm-up + median-of-N + RTF ------------------------------
 
 

@@ -6,14 +6,15 @@ mirroring the TOML tables); each CLI then lets flags override the loaded values
 (defaults < config file < CLI flag).
 
 Fail-loud by design: a malformed file or an invalid value (wrong type, out of
-range, bad enum) raises `ConfigError` rather than silently running on a default,
-so a typo in the config is caught at startup instead of surprising you later.
+range, non-finite, bad enum) raises `ConfigError` rather than silently running on
+a default, so a typo in the config is caught at startup instead of surprising you later.
 Unknown keys/tables only warn (forward-compatible with older configs). A missing
 default file is fine (all defaults); a missing *explicitly requested* file errors.
 """
 
 from __future__ import annotations
 
+import math
 import sys
 import tomllib
 from collections.abc import Callable
@@ -77,9 +78,12 @@ class Config:
     notify: NotifyConfig = field(default_factory=NotifyConfig)
 
 
-def pick(cli: object, cfg: object) -> object:
+def pick[T](cli: T | None, cfg: T) -> T:
     """CLI-over-config helper: the flag wins when it was passed (not None), else the
-    config value. The shared primitive behind each CLI's flag-override step."""
+    config value. The shared primitive behind each CLI's flag-override step.
+
+    Generic so the field's type survives the call: `pick(args.model, cfg.engine.model)`
+    is a `str`, not an `object` silently assigned into a typed dataclass field."""
     return cli if cli is not None else cfg
 
 
@@ -139,8 +143,22 @@ def _pos_int(v: object) -> int:
     return v
 
 
+def _finite(v: int | float) -> bool:
+    # `nan` and `inf` are legal TOML floats and slip past every `<= 0` range check
+    # (both comparisons are False), so finiteness needs its own test. An int too
+    # large to become a float is caught here too, before `float(v)` would raise.
+    try:
+        return math.isfinite(v)
+    except OverflowError:
+        return False
+
+
 def _pos_float(v: object) -> float:
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        raise _Invalid("must be a positive number")
+    if not _finite(v):
+        raise _Invalid("must be a finite positive number")
+    if v <= 0:
         raise _Invalid("must be a positive number")
     return float(v)
 
@@ -149,6 +167,8 @@ def _number(v: object) -> float:
     # Any real number: used where <=0 is a meaningful sentinel (idle-unload off).
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise _Invalid("must be a number")
+    if not _finite(v):
+        raise _Invalid("must be a finite number")
     return float(v)
 
 

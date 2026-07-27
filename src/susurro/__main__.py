@@ -20,7 +20,7 @@ import numpy as np
 
 from ._cli import add_common_flags, apply_engine_audio, positive_float
 from .audio import Recorder, list_input_devices
-from .config import Config, ConfigError, load_config
+from .config import ConfigError, load_config
 from .engine import Engine
 
 
@@ -32,11 +32,6 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--duration", type=positive_float, default=3.0, help="window length in seconds")
     p.add_argument("--list-devices", action="store_true", help="list input devices and exit")
     return p
-
-
-def _apply_cli(config: Config, args: argparse.Namespace) -> Config:
-    """Layer the mic test's flags over the loaded config (engine/audio only)."""
-    return apply_engine_audio(config, args)
 
 
 def _record_window(recorder: Recorder, duration_s: float) -> np.ndarray:
@@ -54,24 +49,35 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     try:
-        config = _apply_cli(load_config(args.config), args)
+        # No wrapper: the mic test adds no flags of its own beyond the shared
+        # engine/audio ones, so it calls the shared resolver directly.
+        config = apply_engine_audio(load_config(args.config), args)
     except ConfigError as exc:
         print(f"susurro: {exc}", file=sys.stderr, flush=True)
         return 1
 
     eng, aud = config.engine, config.audio
     print(f"loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
-    engine = Engine(
-        eng.model,
-        device=eng.device,
-        compute_type=eng.compute_type,
-        language=eng.language,
-        beam_size=eng.beam_size,
-        vad_filter=eng.vad_filter,
-    )
-
-    # Warm the CUDA kernels so the first real window already hits warm timing.
-    engine.transcribe(np.zeros(aud.sample_rate // 2, dtype=np.float32))
+    try:
+        engine = Engine(
+            eng.model,
+            device=eng.device,
+            compute_type=eng.compute_type,
+            language=eng.language,
+            beam_size=eng.beam_size,
+            vad_filter=eng.vad_filter,
+        )
+        # Warm the CUDA kernels so the first real window already hits warm timing.
+        engine.transcribe(np.zeros(aud.sample_rate // 2, dtype=np.float32))
+    except Exception as exc:  # noqa: BLE001 (a startup failure gets a message, not a traceback)
+        # Typo'd model name, failed download, broken CUDA install: same clean
+        # `susurro: …` + exit 1 as a config error, naming the model and device.
+        print(
+            f"susurro: failed to load model {eng.model!r} on {eng.device}: {exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
 
     recorder = Recorder(
         max_duration_s=args.duration + 1.0,

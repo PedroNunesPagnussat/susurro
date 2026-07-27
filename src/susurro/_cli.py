@@ -10,6 +10,7 @@ single edit, not shotgun surgery across both `main`s. The daemon adds its own
 from __future__ import annotations
 
 import argparse
+import math
 from dataclasses import replace
 
 from .config import Config, pick
@@ -20,11 +21,24 @@ def parse_device(value: str) -> int | str:
     return int(value) if value.isdigit() else value
 
 
-def positive_float(value: str) -> float:
-    """An argparse type that rejects non-positive values, so a flag can't smuggle a
-    `<= 0` past the config's fail-loud validation (e.g. `--max-record 0` would make
-    every recording auto-stop instantly)."""
+def finite_float(value: str) -> float:
+    """An argparse type that rejects `nan`/`inf` but accepts any finite value, sign
+    included. For flags where a non-positive value is meaningful (`--idle-timeout 0`
+    disables idle-unload, so `positive_float` would be wrong) but a non-finite one
+    never is: it survives every range check, then reaches the daemon's accept-loop
+    `settimeout()`, which raises `OverflowError` on a non-finite timeout."""
     parsed = float(value)
+    if not math.isfinite(parsed):
+        raise argparse.ArgumentTypeError(f"must be a finite number (got {value})")
+    return parsed
+
+
+def positive_float(value: str) -> float:
+    """An argparse type that rejects non-positive and non-finite values, so a flag
+    can't smuggle past the config's fail-loud validation (e.g. `--max-record 0` would
+    make every recording auto-stop instantly). `nan`/`inf` need their own check: every
+    `<= 0` comparison against them is False, and `float("1e400")` is already `inf`."""
+    parsed = finite_float(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be > 0 (got {value})")
     return parsed

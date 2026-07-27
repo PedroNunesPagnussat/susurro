@@ -174,3 +174,37 @@ def test_load_wav_downmixes_multichannel_to_first_channel(tmp_path):
     assert out.ndim == 1
     assert out.shape == (3,)  # 3 frames, mono — not 6 interleaved samples
     np.testing.assert_allclose(out, [left / 32768.0] * 3, rtol=1e-6)  # left kept
+
+
+def _write_wav(path, rate: int, frames: int = 10) -> None:
+    """A silent 16-bit mono WAV at `rate` — just a header to load against."""
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(np.zeros(frames, dtype=np.int16).tobytes())
+
+
+def test_load_wav_rejects_a_wav_at_another_sample_rate(tmp_path):
+    # Nothing here resamples, so a 48kHz take read as 16kHz would transcribe as
+    # garbage *and* be timed against 3x its real duration — both silently. The
+    # error has to name the file and both rates to be actionable.
+    path = tmp_path / "48k.wav"
+    _write_wav(path, 48_000)
+
+    with pytest.raises(ValueError) as exc:
+        load_wav(path)
+
+    message = str(exc.value)
+    assert "48000" in message and str(SAMPLE_RATE) in message
+    assert "48k.wav" in message
+
+
+def test_load_wav_accepts_another_rate_when_the_caller_expects_it(tmp_path):
+    # The rate is the caller's knob (the bench runner passes the same rate it
+    # divides by for RTF), not a hardcoded 16k assumption inside the loader.
+    path = tmp_path / "8k.wav"
+    _write_wav(path, 8_000, frames=4)
+    assert load_wav(path, expected_rate=8_000).shape == (4,)

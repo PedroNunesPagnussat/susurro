@@ -11,6 +11,13 @@ Never raises: notifications are cosmetic, so a missing/failed/stuck `notify-send
 is swallowed (surfaced on stderr) rather than crashing the long-lived daemon or
 wedging its single-threaded accept loop. The generous `subprocess` timeout is a
 pathological-hang backstop, not a latency knob — notify-send returns immediately.
+
+Cosmetic, but not optional: the daemon is autostarted from Hyprland's `exec-once`,
+so stderr goes nowhere and these toasts are the *only* channel to the user. Both
+`done` and `language` therefore take a keyword-only outcome flag so a failure
+(wtype didn't type it; the language code was rejected) is reported here instead of
+being dressed up as success. The flags default to the success value so a caller
+that doesn't know about them can't accidentally claim a failure.
 """
 
 from __future__ import annotations
@@ -60,15 +67,42 @@ class Notifier:
         # the active language so you can see what it'll transcribe as.
         _send("-t", "0", "-u", "low", f"🎙 Recording ({language})…", timeout=self._timeout_s)
 
-    def done(self, text: str) -> None:
+    def done(self, text: str, *, injected: bool = True) -> None:
         # Replaces the persistent toast and fades on its own. Called on *every*
         # stop (even empty/failed), else the -t 0 toast would hang on screen.
         body = text.strip() or "(no speech)"
+        if not injected:
+            # wtype couldn't type it (missing binary, compositor refusal). Say so
+            # instead of "✓ Done": normal urgency and a longer dwell so it's noticed,
+            # and the transcript stays in the body so the words aren't simply lost.
+            _send(
+                "-t",
+                "8000",
+                "-u",
+                "normal",
+                "⚠ Not typed (wtype failed)",
+                body,
+                timeout=self._timeout_s,
+            )
+            return
         _send("-t", "4000", "-u", "low", "✓ Done", body, timeout=self._timeout_s)
 
-    def language(self, code: str) -> None:
+    def language(self, code: str, *, supported: bool = True) -> None:
         # Transient confirmation of a live language switch. Shares the sync slot,
         # so it's a quick standalone toast (you switch while not recording).
+        if not supported:
+            # The switch was refused, so nothing changed. Name the offending code:
+            # the alternative was a confirming toast followed by every later
+            # utterance silently failing inside the model.
+            _send(
+                "-t",
+                "5000",
+                "-u",
+                "normal",
+                f'⚠ Susurro: unknown language "{code}" — unchanged',
+                timeout=self._timeout_s,
+            )
+            return
         name = _LANG_NAMES.get(code, code)
         _send(
             "-t",
@@ -84,5 +118,5 @@ class NullNotifier:
     """No-op notifier for `--no-notify` and the daemon's default (opt-in toasts)."""
 
     def recording(self, language: str) -> None: ...
-    def done(self, text: str) -> None: ...
-    def language(self, code: str) -> None: ...
+    def done(self, text: str, *, injected: bool = True) -> None: ...
+    def language(self, code: str, *, supported: bool = True) -> None: ...

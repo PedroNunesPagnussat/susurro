@@ -8,7 +8,11 @@ The subcommand bodies lazy-import their implementation (`recording` for `record`
 
     uv run susurro-bench --list-models   # ids + availability, then exit
     uv run susurro-bench record          # read the scripts into bench/recordings/
+    uv run susurro-bench record --device 4   # capture from a specific input
     uv run susurro-bench run             # transcribe + score + report
+
+`record` reads the same `[audio]` config the daemon does, so the input you already
+configured is the one it captures from.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import argparse
 import sys
 
 from . import registry
+from .paths import BenchPathError
 
 
 def parse_models(value: str | None) -> list[str] | None:
@@ -54,6 +59,15 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="re-record scripts that already have a recording",
     )
+    # Same spelling and precedence as `susurro`/`susurro-daemon` (defaults < config
+    # file < flag). `--device` stays a raw string here — `_cli.parse_device` turns it
+    # into an index or a name substring in the command body, because importing the
+    # config layer at parser-build time would break this module's import-light
+    # contract for `--help` and `--list-models`.
+    rec.add_argument("--config", default=None, help="path to config.toml")
+    rec.add_argument(
+        "--device", default=None, help="input device index or name (overrides [audio] device)"
+    )
 
     run = sub.add_parser("run", help="transcribe every recording with every model, report")
     _add_models_flag(run)
@@ -77,14 +91,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_models:
         return _list_models()
 
-    if args.command == "record":
-        from .recording import record_command
+    # `bench_dir()` resolves lazily inside the command bodies, so its failure surfaces
+    # here. Caught at the one boundary both commands pass through, so a missing bench
+    # tree reads like every other error (`susurro-bench: ...`) instead of a traceback.
+    try:
+        if args.command == "record":
+            from .recording import record_command
 
-        return record_command(args)
-    if args.command == "run":
-        from .runner import run_command
+            return record_command(args)
+        if args.command == "run":
+            from .runner import run_command
 
-        return run_command(args)
+            return run_command(args)
+    except BenchPathError as exc:
+        print(f"susurro-bench: {exc}", file=sys.stderr)
+        return 1
 
     parser.print_help(sys.stderr)
     return 2

@@ -3,8 +3,9 @@
 `notify-send` is external and needs a running notification daemon, so
 `subprocess.run` is patched. We assert the command shape (app name + the mako
 sync hint that makes the two toasts share one slot), the persistent-vs-fading
-timeouts, the empty-transcript fallback, and the never-raise contract (a missing
-binary or a hung spawn is swallowed, never surfaced to the daemon loop).
+timeouts, the empty-transcript fallback, the two failure toasts (wtype didn't type
+it; the language code was refused), and the never-raise contract (a missing binary
+or a hung spawn is swallowed, never surfaced to the daemon loop).
 """
 
 import subprocess
@@ -65,6 +66,37 @@ def test_done_falls_back_when_transcript_empty():
     assert _cmd(run)[-1] == "(no speech)"
 
 
+def test_done_reports_a_failed_injection_instead_of_success():
+    # wtype couldn't type it: the toast must not read "✓ Done". The transcript stays
+    # in the body so the words are still recoverable by eye.
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().done("hello world", injected=False)
+    cmd = _cmd(run)
+    assert "⚠ Not typed (wtype failed)" in cmd
+    assert "✓ Done" not in cmd
+    assert cmd[-1] == "hello world"  # body keeps the transcript
+    assert cmd[cmd.index("-u") + 1] == "normal"  # louder than the success toast
+    assert "string:x-canonical-private-synchronous:susurro" in cmd  # still replaces
+
+
+def test_done_defaults_to_the_success_toast():
+    # The flag defaults to True, so a caller that doesn't pass it can't claim failure.
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().done("hi")
+    assert "✓ Done" in _cmd(run)
+
+
+def test_language_toast_reports_a_rejected_code():
+    # An unsupported code changes nothing, so the toast names the offending code
+    # rather than confirming a switch that didn't happen.
+    with mock.patch("susurro.notify.subprocess.run") as run:
+        Notifier().language("xx", supported=False)
+    cmd = _cmd(run)
+    assert cmd[-1] == '⚠ Susurro: unknown language "xx" — unchanged'
+    assert cmd[cmd.index("-u") + 1] == "normal"
+    assert cmd[cmd.index("-t") + 1] != "0"  # transient -> fades on its own
+
+
 def test_missing_notify_send_is_swallowed(capsys):
     with mock.patch("susurro.notify.subprocess.run", side_effect=FileNotFoundError):
         Notifier().recording("en")  # must not raise
@@ -93,8 +125,12 @@ def test_notifier_defaults_subprocess_timeout():
 
 
 def test_null_notifier_is_silent():
+    # Also pins the signatures: the null notifier has to accept the outcome flags,
+    # or `--no-notify` would blow up on exactly the failure paths that added them.
     with mock.patch("susurro.notify.subprocess.run") as run:
         NullNotifier().recording("en")
         NullNotifier().done("hi")
+        NullNotifier().done("hi", injected=False)
         NullNotifier().language("pt")
+        NullNotifier().language("xx", supported=False)
     run.assert_not_called()

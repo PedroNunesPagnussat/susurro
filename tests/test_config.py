@@ -181,6 +181,49 @@ def test_positive_float_rejects_zero(tmp_path):
         load_config(p)
 
 
+# --- fail loud: non-finite floats ------------------------------------------
+#
+# `nan`, `inf` and `-inf` are legal TOML floats, and every `<= 0` range check is
+# False for all three — so without an explicit finiteness test they'd sail through
+# as ordinary values (`max_record_s = nan` silently ends every recording instantly;
+# `inf` blows up the daemon's `settimeout`).
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf", "+inf", "1e400"])
+def test_max_record_rejects_non_finite(tmp_path, value):
+    p = _write(tmp_path / "c.toml", f"[daemon]\nmax_record_s = {value}\n")
+    with pytest.raises(ConfigError, match="max_record_s must be a finite positive number"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_notify_timeout_rejects_non_finite(tmp_path, value):
+    p = _write(tmp_path / "c.toml", f"[notify]\ntimeout_s = {value}\n")
+    with pytest.raises(ConfigError, match="timeout_s must be a finite positive number"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
+def test_idle_timeout_rejects_non_finite(tmp_path, value):
+    # `_number` accepts <=0 as the idle-unload-off sentinel, but not nan/inf.
+    p = _write(tmp_path / "c.toml", f"[daemon]\nidle_timeout_s = {value}\n")
+    with pytest.raises(ConfigError, match="idle_timeout_s must be a finite number"):
+        load_config(p)
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "-0.5", "300.0", "1e6"])
+def test_idle_timeout_still_accepts_every_finite_value(tmp_path, value):
+    cfg = load_config(_write(tmp_path / "c.toml", f"[daemon]\nidle_timeout_s = {value}\n"))
+    assert cfg.daemon.idle_timeout_s == float(value)
+
+
+def test_non_finite_error_names_the_offending_value(tmp_path):
+    # The section builder's table/key/source context must survive the new branch.
+    p = _write(tmp_path / "c.toml", "[daemon]\nmax_record_s = inf\n")
+    with pytest.raises(ConfigError, match=r"c\.toml: \[daemon\] max_record_s .* \(got inf\)"):
+        load_config(p)
+
+
 def test_audio_device_rejects_float(tmp_path):
     p = _write(tmp_path / "c.toml", "[audio]\ndevice = 1.5\n")
     with pytest.raises(ConfigError, match="device"):

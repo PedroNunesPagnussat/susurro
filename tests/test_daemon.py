@@ -100,21 +100,41 @@ class FakeClock:
 
 
 class SpyNotifier:
-    """Stand-in for `notify.Notifier`: records the (state, arg) sequence so tests
+    """Stand-in for `notify.Notifier`: records the (state, arg…) sequence so tests
     can assert the recording toast is raised on start (with the active language)
-    and always cleared on stop, and the language toast fires on a switch."""
+    and always cleared on stop, and the language toast fires on a switch.
+
+    `done`/`language` record their outcome flag too, so a test can tell "typed it"
+    from "couldn't type it" and an accepted language switch from a rejected one."""
 
     def __init__(self):
-        self.events = []  # ("recording", lang) / ("done", text) / ("language", code)
+        # ("recording", lang) / ("done", text, injected) / ("language", code, supported)
+        self.events = []
 
     def recording(self, language):
         self.events.append(("recording", language))
 
-    def done(self, text):
-        self.events.append(("done", text))
+    def done(self, text, *, injected=True):
+        self.events.append(("done", text, injected))
 
-    def language(self, code):
-        self.events.append(("language", code))
+    def language(self, code, *, supported=True):
+        self.events.append(("language", code, supported))
+
+
+class FakeInjector:
+    """Stand-in for `inject.inject`: records what was typed and reports success.
+
+    Deliberately not `list.append` (which returns None): the daemon reads the return
+    value to decide whether the stop toast says "✓ Done" or "⚠ Not typed", so the
+    fake has to answer that question like the real seam does."""
+
+    def __init__(self, ok=True):
+        self.ok = ok
+        self.texts = []  # what the daemon asked to type, in order
+
+    def __call__(self, text):
+        self.texts.append(text)
+        return self.ok
 
 
 def _make(
@@ -125,14 +145,15 @@ def _make(
     idle_timeout_s=None,
     language="en",
     notify=None,
+    inject=None,
 ):
     recorder = recorder or FakeRecorder()
     engine = engine or FakeEngine()
-    injected: list[str] = []
+    injected = inject or FakeInjector()  # pass FakeInjector(ok=False) for a failed wtype
     daemon = Daemon(
         recorder,
         engine,
-        injected.append,
+        injected,
         notify=notify or SpyNotifier(),  # pass your own to assert on the toast sequence
         language=language,
         max_record_s=max_record_s,
@@ -157,7 +178,7 @@ def test_start_then_stop_transcribes_and_injects():
     assert recorder.starts == 1 and recorder.stops == 1
     assert len(engine.calls) == 1  # transcribed the captured audio
     np.testing.assert_array_equal(engine.calls[0], recorder._audio)
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 def test_empty_transcript_is_not_injected():
@@ -166,7 +187,7 @@ def test_empty_transcript_is_not_injected():
     text = daemon.stop()
     assert text == ""
     assert len(engine.calls) == 1  # still transcribed
-    assert injected == []  # but nothing typed
+    assert injected.texts == []  # but nothing typed
 
 
 # --- no-op / robustness ----------------------------------------------------
@@ -178,7 +199,7 @@ def test_stop_without_start_is_noop():
     assert text == ""
     assert recorder.stops == 0
     assert engine.calls == []
-    assert injected == []
+    assert injected.texts == []
     assert daemon.recording is False
 
 
@@ -203,7 +224,7 @@ def test_stop_resets_to_idle_even_if_engine_raises():
         daemon.stop()
     assert daemon.recording is False  # not wedged
     assert recorder.stops == 1  # mic was released
-    assert injected == []
+    assert injected.texts == []
 
 
 # --- safety timeout --------------------------------------------------------
@@ -216,7 +237,7 @@ def test_check_timeout_does_not_fire_before_deadline():
     clock.advance(29.9)
     assert daemon.check_timeout() is None
     assert daemon.recording is True
-    assert injected == []
+    assert injected.texts == []
 
 
 def test_check_timeout_auto_stops_at_deadline():
@@ -228,7 +249,7 @@ def test_check_timeout_auto_stops_at_deadline():
     assert text == "hello world"  # auto-stop transcribes + injects like a real stop
     assert daemon.recording is False
     assert recorder.stops == 1
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 def test_check_timeout_noop_when_idle():
@@ -247,7 +268,7 @@ def test_late_stop_after_auto_stop_is_noop():
     assert text == ""
     assert recorder.stops == 1  # not stopped again
     assert len(engine.calls) == 1  # not transcribed again
-    assert injected == ["hello world"]  # only the auto-stop injected
+    assert injected.texts == ["hello world"]  # only the auto-stop injected
 
 
 # --- remaining -------------------------------------------------------------
@@ -345,7 +366,7 @@ def test_transcribe_reloads_after_idle_unload():
     text = daemon.stop()  # pays the reload, then transcribes
     assert text == "hello world"
     assert engine.loaded is True
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 # --- preload on key-press --------------------------------------------------
@@ -384,7 +405,7 @@ def test_press_on_plain_engine_never_attempts_load():
     assert recorder.starts == 1
 
     daemon.stop()  # and the full round-trip still works
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 def test_failed_preload_leaves_daemon_recording_and_stop_still_transcribes():
@@ -407,7 +428,7 @@ def test_failed_preload_leaves_daemon_recording_and_stop_still_transcribes():
     text = daemon.stop()  # transcribe-path reload picks up the slack
     assert text == "hello world"
     assert daemon.recording is False
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 def test_short_press_then_immediate_stop_still_transcribes():
@@ -418,7 +439,7 @@ def test_short_press_then_immediate_stop_still_transcribes():
     text = daemon.stop()
     assert text == "hello world"
     assert daemon.recording is False
-    assert injected == ["hello world"]
+    assert injected.texts == ["hello world"]
 
 
 def test_plain_engine_never_unloads():
@@ -446,7 +467,7 @@ def test_stop_clears_toast_with_transcript():
     daemon, _recorder, _engine, _injected = _make(notify=spy)
     daemon.start()
     daemon.stop()
-    assert spy.events == [("recording", "en"), ("done", "hello world")]
+    assert spy.events == [("recording", "en"), ("done", "hello world", True)]
 
 
 def test_stop_without_start_does_not_notify():
@@ -463,7 +484,7 @@ def test_auto_stop_clears_toast():
     daemon.start()
     clock.advance(30.0)
     daemon.check_timeout()
-    assert spy.events == [("recording", "en"), ("done", "hello world")]
+    assert spy.events == [("recording", "en"), ("done", "hello world", True)]
 
 
 def test_toast_is_cleared_even_if_engine_raises():
@@ -476,8 +497,32 @@ def test_toast_is_cleared_even_if_engine_raises():
     daemon.start()
     with pytest.raises(RuntimeError, match="boom"):
         daemon.stop()
-    # the persistent -t 0 toast must still be replaced on failure, else it hangs
-    assert spy.events == [("recording", "en"), ("done", "")]
+    # the persistent -t 0 toast must still be replaced on failure, else it hangs.
+    # `injected` stays True: nothing was ever handed to wtype, so this is a
+    # "(no speech)" stop, not a "couldn't type it" one.
+    assert spy.events == [("recording", "en"), ("done", "", True)]
+
+
+def test_failed_injection_is_reported_in_the_done_toast():
+    # wtype missing/failing types nothing, and stderr is invisible under exec-once —
+    # so the toast must say so instead of claiming "✓ Done" over a lost transcript.
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, injected = _make(notify=spy, inject=FakeInjector(ok=False))
+    daemon.start()
+    assert daemon.stop() == "hello world"  # still transcribed, just never typed
+    assert injected.texts == ["hello world"]  # injection was attempted
+    assert spy.events == [("recording", "en"), ("done", "hello world", False)]
+
+
+def test_empty_transcript_is_not_reported_as_a_typing_failure():
+    # Nothing to type is not "typing failed": the empty stop must still be the
+    # plain "(no speech)" toast, i.e. injected stays True.
+    spy = SpyNotifier()
+    daemon, _recorder, _engine, injected = _make(engine=FakeEngine(text=""), notify=spy)
+    daemon.start()
+    daemon.stop()
+    assert injected.texts == []  # inject never called
+    assert spy.events == [("recording", "en"), ("done", "", True)]
 
 
 # --- language --------------------------------------------------------------
@@ -490,7 +535,7 @@ def test_set_language_updates_engine_and_posts_toast():
     assert active == "pt"
     assert daemon.language == "pt"
     assert engine.language == "pt"  # pushed to the engine, no reload
-    assert spy.events == [("language", "pt")]
+    assert spy.events == [("language", "pt", True)]
 
 
 def test_toggle_flips_en_and_pt():
@@ -500,7 +545,7 @@ def test_toggle_flips_en_and_pt():
     assert engine.language == "pt"
     assert daemon.set_language("toggle") == "en"  # flips back
     assert engine.language == "en"
-    assert spy.events == [("language", "pt"), ("language", "en")]
+    assert spy.events == [("language", "pt", True), ("language", "en", True)]
 
 
 def test_start_uses_the_active_language_in_recording_toast():
@@ -508,7 +553,38 @@ def test_start_uses_the_active_language_in_recording_toast():
     daemon, _recorder, _engine, _injected = _make(language="en", notify=spy)
     daemon.set_language("pt")
     daemon.start()
-    assert spy.events == [("language", "pt"), ("recording", "pt")]
+    assert spy.events == [("language", "pt", True), ("recording", "pt")]
+
+
+def test_unknown_language_is_rejected_and_nothing_changes():
+    # `susurro-ctl lang xx` used to be accepted, then blow up inside the model on
+    # every later utterance. It must be refused at the switch: active language kept,
+    # engine untouched, and a warning toast naming the bad code.
+    spy = SpyNotifier()
+    daemon, _recorder, engine, _injected = _make(language="en", notify=spy)
+    active = daemon.set_language("xx")
+    assert active == "en"  # returns the language still in force, not the request
+    assert daemon.language == "en"
+    assert engine.language == "en"  # never pushed to the engine
+    assert spy.events == [("language", "xx", False)]
+
+
+def test_rejected_language_does_not_raise_out_of_dispatch():
+    # Rejection is handled, not raised: a typo must not reach `_serve_once`'s
+    # catch-all (which would abort() the daemon and log to an invisible stderr).
+    daemon, _recorder, _engine, _injected = _make(language="en")
+    _dispatch(daemon, "lang zz")  # must not raise
+    assert daemon.language == "en"
+
+
+def test_a_valid_switch_still_works_after_a_rejected_one():
+    # The rejection path must leave the daemon usable, not latch a bad state.
+    spy = SpyNotifier()
+    daemon, _recorder, engine, _injected = _make(language="en", notify=spy)
+    daemon.set_language("xx")
+    assert daemon.set_language("pt") == "pt"
+    assert engine.language == "pt"
+    assert spy.events == [("language", "xx", False), ("language", "pt", True)]
 
 
 def test_daemon_boots_into_the_given_language():
@@ -550,7 +626,7 @@ def test_dispatch_unknown_verb_warns_and_changes_nothing(capsys):
     _dispatch(daemon, "frobnicate now")
     assert daemon.recording is False
     assert recorder.starts == 0
-    assert injected == []
+    assert injected.texts == []
     assert "unknown command" in capsys.readouterr().err
 
 

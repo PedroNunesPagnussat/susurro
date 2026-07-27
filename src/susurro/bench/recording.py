@@ -1,10 +1,15 @@
 """`susurro-bench record` — walk the scripts and capture the owner reading each.
 
-Two pieces of pure logic (unit-tested): `save_wav` (the inverse of `audio.load_wav`,
-so a take round-trips) and `plan_recordings` (which ids to record given what's on
-disk and the flags). `record_command` is the interactive shell around them — it
-drives the real `Recorder` and prompts a person, so it's verified by hand, not in a
-unit test.
+Three pieces of pure logic (unit-tested): `save_wav` (the inverse of
+`audio.load_wav`, so a take round-trips), `plan_recordings` (which ids to record
+given what's on disk and the flags), and `resolve_audio` (the `[audio]` settings to
+capture with). `record_command` is the interactive shell around them — it drives the
+real `Recorder` and prompts a person, so it's verified by hand, not in a unit test.
+
+Capture settings come from the same `config.toml` the daemon reads rather than from
+hardcoded defaults: a `[audio] device` that the owner needed to set for dictation is
+exactly the one needed here, and capturing ten silent takes from the wrong input is
+only discovered after the fact.
 """
 
 from __future__ import annotations
@@ -12,11 +17,14 @@ from __future__ import annotations
 import argparse
 import sys
 import wave
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
+from .._cli import parse_device
 from ..audio import SAMPLE_RATE, Recorder
+from ..config import AudioConfig, ConfigError, load_config, pick
 from . import paths
 
 
@@ -69,6 +77,27 @@ def plan_recordings(
     return [i for i in ids if i not in recorded]
 
 
+def resolve_audio(args: argparse.Namespace) -> AudioConfig:
+    """The `[audio]` settings to capture with: the config file, with `--device`
+    layered on top (built-in defaults < config file < CLI flag — the same precedence
+    `susurro` and `susurro-daemon` use).
+
+    Raises `ConfigError` on a bad config *and* on a sample rate the harness can't
+    benchmark: every backend is promised 16kHz mono (`bench/transcriber.py`) and
+    nothing resamples, so a non-16k rate is refused here — before ten scripts get
+    read into files `run` would only reject later."""
+    config = load_config(args.config)
+    if config.audio.sample_rate != SAMPLE_RATE:
+        raise ConfigError(
+            f"[audio] sample_rate is {config.audio.sample_rate} Hz, but the benchmark "
+            f"requires {SAMPLE_RATE} Hz (no backend resamples)"
+        )
+    # `--device` is a raw string from argparse (see cli.py) — parse it with the same
+    # rule the other CLIs use: digits are a PortAudio index, anything else a name.
+    flag = parse_device(args.device) if args.device is not None else None
+    return replace(config.audio, device=pick(flag, config.audio.device))
+
+
 def _capture_one(recorder: Recorder, id_: str, text: str) -> np.ndarray:
     """Show the script and capture one take: Enter to start, Enter to stop."""
     print(f"\n=== {id_} ===\n{text}\n")
@@ -81,6 +110,14 @@ def _capture_one(recorder: Recorder, id_: str, text: str) -> np.ndarray:
 def record_command(args: argparse.Namespace) -> int:
     """Interactive: for each planned script, show it and capture a take to
     `bench/recordings/<id>.wav`. Not unit-tested (needs a mic and a person)."""
+    # Resolve the capture settings first: a config error must surface before the
+    # person is asked to read anything.
+    try:
+        audio_cfg = resolve_audio(args)
+    except ConfigError as exc:
+        print(f"susurro-bench: {exc}", file=sys.stderr)
+        return 1
+
     scripts = paths.scripts_dir()
     recordings = paths.recordings_dir()
     ids = script_ids(scripts)
@@ -100,14 +137,25 @@ def record_command(args: argparse.Namespace) -> int:
 
     recordings.mkdir(parents=True, exist_ok=True)
     # Headroom over the longest read so a slow reader is never cut off mid-script.
-    recorder = Recorder(max_duration_s=120.0)
-    print(f"recording {len(plan)} script(s) into {recordings}. Ctrl-C to stop.")
+    recorder = Recorder(
+        max_duration_s=120.0,
+        samplerate=audio_cfg.sample_rate,
+        channels=audio_cfg.channels,
+        device=audio_cfg.device,
+    )
+    print(
+        f"recording {len(plan)} script(s) into {recordings} "
+        f"(input: {audio_cfg.device if audio_cfg.device is not None else 'default'}). "
+        "Ctrl-C to stop."
+    )
     try:
         for id_ in plan:
             text = (scripts / f"{id_}.txt").read_text().strip()
             audio = _capture_one(recorder, id_, text)
-            save_wav(recordings / f"{id_}.wav", audio)
-            print(f"saved {id_}.wav ({len(audio) / SAMPLE_RATE:.1f}s)")
+            # One rate for the whole path: what we captured at, what the WAV header
+            # says, and what `run` divides by for RTF — never a second default.
+            save_wav(recordings / f"{id_}.wav", audio, sample_rate=audio_cfg.sample_rate)
+            print(f"saved {id_}.wav ({len(audio) / audio_cfg.sample_rate:.1f}s)")
     except KeyboardInterrupt:
         if recorder.recording:
             recorder.stop()  # release the mic; the in-progress take is discarded

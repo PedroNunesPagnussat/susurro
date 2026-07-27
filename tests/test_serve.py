@@ -5,7 +5,8 @@ touches the socket — the part `test_daemon.py` can't reach. A real `AF_UNIX`
 listener stands in for the daemon socket and a `FakeDaemon` records the calls the
 loop makes, so we assert: a command is dispatched, an accept() timeout runs the
 safety/idle checks, a silent client is dropped (not wedged), a dispatch error
-triggers abort(), and `serve()` cleans up its socket on shutdown.
+triggers abort(), the accept() timeout is clamped (an unusable deadline must not
+kill the loop), and `serve()` cleans up its socket on shutdown.
 """
 
 import socket
@@ -13,7 +14,7 @@ import socket
 import pytest
 
 from susurro import daemon as daemon_mod
-from susurro.daemon import _serve_once, serve
+from susurro.daemon import _MAX_ACCEPT_TIMEOUT_S, _accept_timeout, _serve_once, serve
 
 
 class FakeDaemon:
@@ -151,6 +152,23 @@ def test_serve_once_aborts_on_dispatch_error(tmp_path, capsys):
     assert "failed" in capsys.readouterr().err
 
 
+def test_serve_once_survives_a_non_finite_deadline(tmp_path):
+    # A non-finite deadline (an inf max_record_s/idle_timeout_s slipping past the
+    # config validators) used to reach settimeout(inf) -> OverflowError, thrown
+    # *outside* the try that guards accept(), so it escaped serve() and killed the
+    # daemon. It must be clamped instead, and the command still dispatched.
+    srv = _server(tmp_path)
+    client = _connect(tmp_path)
+    client.sendall(b"start")
+    daemon = FakeDaemon(remaining=float("inf"))
+    try:
+        _serve_once(srv, daemon)  # must not raise
+    finally:
+        client.close()
+        srv.close()
+    assert daemon.events == ["start"]
+
+
 def test_serve_once_ignores_blank_command(tmp_path):
     srv = _server(tmp_path)
     client = _connect(tmp_path)
@@ -162,6 +180,29 @@ def test_serve_once_ignores_blank_command(tmp_path):
         client.close()
         srv.close()
     assert daemon.events == []
+
+
+# --- accept() timeout clamping --------------------------------------------
+
+
+def test_accept_timeout_is_none_when_nothing_is_armed():
+    assert _accept_timeout([]) is None  # no deadline -> block until a command
+
+
+def test_accept_timeout_picks_the_nearest_deadline():
+    assert _accept_timeout([12.0, 3.0]) == pytest.approx(3.0)
+
+
+def test_accept_timeout_floors_zero_to_stay_in_timeout_mode():
+    # 0.0 would flip the socket to non-blocking and busy-spin the loop.
+    assert _accept_timeout([0.0]) > 0.0
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("nan"), 1e300])
+def test_accept_timeout_clamps_unusable_deadlines(bad):
+    # inf/nan (and any absurd finite value) must never reach settimeout(): every
+    # comparison against nan is False, so the ceiling needs its own finiteness check.
+    assert _accept_timeout([bad]) == _MAX_ACCEPT_TIMEOUT_S
 
 
 # --- serve() setup / teardown ---------------------------------------------

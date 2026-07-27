@@ -1,10 +1,11 @@
 """The common seam every benchmark backend implements.
 
-`Transcriber` is a `runtime_checkable Protocol` mirroring `Formatter`
-(`src/susurro/formatter.py:20`) and `_ManagedEngine` (`src/susurro/daemon.py`): a
+`Transcriber` is a Protocol like `Formatter` (`src/susurro/formatter.py`): a
 structural type so the runner stays backend-blind (no per-backend if/elif). Every
-backend — faster-whisper, whisper.cpp — satisfies it by having a `name`
-and a `transcribe`.
+backend — faster-whisper, whisper.cpp — satisfies it by having a `transcribe`, and
+nothing else. It is `runtime_checkable` (like `_ManagedEngine` in
+`src/susurro/daemon.py`, unlike `Formatter`) because that shape is pinned by an
+`isinstance` test in `tests/test_bench_transcriber.py`.
 """
 
 from __future__ import annotations

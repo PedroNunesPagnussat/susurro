@@ -12,14 +12,16 @@ filler); that belongs in a future LLM stage, not a blunt rule.
 from __future__ import annotations
 
 import re
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 _WHITESPACE = re.compile(r"\s+")
 
 
-@runtime_checkable
 class Formatter(Protocol):
-    """Turns a raw transcript into the text to emit; "" means emit nothing."""
+    """Turns a raw transcript into the text to emit; "" means emit nothing.
+
+    Static-only (deliberately not `runtime_checkable`): the Engine takes whatever
+    it's handed and calls `format`; nothing isinstance-checks a Formatter."""
 
     def format(self, text: str | None) -> str: ...
 
