@@ -6,12 +6,12 @@ whatever window holds focus. `wtype` speaks the Wayland virtual-keyboard protoco
 
 Never raises: a non-zero return, a missing `wtype` binary, or a hung spawn are all
 surfaced on stderr so an injection failure can't crash — or wedge — the long-lived,
-single-threaded daemon. It *reports* the failure instead, via a bool return: stderr
-goes nowhere under Hyprland's `exec-once`, so the caller needs a value it can turn
-into something the user actually sees (the daemon turns it into the stop toast).
-Without it a missing `wtype` — the most likely first-run failure — looked exactly
-like success. The subprocess `timeout` is the anti-wedge backstop: `inject` runs
-inside the daemon's `serve()` accept loop, so a stuck `wtype` (compositor stall)
+single-threaded daemon. It *reports* the failure via a bool return: stderr goes
+nowhere under Hyprland's `exec-once`, so the caller needs a value it can show the
+user (the daemon turns it into the stop toast). Without it a missing `wtype` — the
+likeliest first-run failure — looked exactly like success. The subprocess `timeout`
+is the anti-wedge backstop: `inject` runs inside the daemon's accept loop, so a
+stuck `wtype` (compositor stall)
 must not block it forever (mirrors `notify.py`). Empty/whitespace text is a no-op (the
 formatter already drops silence; this is the belt-and-braces guard so we never spawn
 wtype with nothing to type).

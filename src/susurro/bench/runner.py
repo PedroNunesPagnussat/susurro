@@ -89,11 +89,10 @@ def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip],
     recording is skipped with a warning, and an orphan recording (no script) warns
     too — neither aborts the run.
 
-    An unreadable or off-format take is dropped the same way, for the same reason:
-    one bad file must not cost the rest of the eval set. `SAMPLE_RATE` is both what
-    the recordings must be at and what the runner later divides by for RTF, so a take
-    at another rate is dropped here rather than transcribed at the wrong speed and
-    timed against the wrong duration."""
+    An unreadable or off-format take is dropped the same way: one bad file must not
+    cost the rest of the eval set. `SAMPLE_RATE` is both what the recordings must be
+    at and what the runner divides by for RTF, so a take at another rate is dropped
+    rather than transcribed at the wrong speed and timed against the wrong duration."""
     from .recording import recorded_ids, script_ids
 
     ids = script_ids(scripts_dir)
@@ -107,7 +106,7 @@ def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip],
             continue
         reference = (scripts_dir / f"{id_}.txt").read_text().strip()
         try:
-            audio = load_wav(wav, expected_rate=SAMPLE_RATE)
+            audio = load_wav(wav)
         except ValueError as exc:  # parsed, but unusable: wrong rate / not 16-bit
             warnings.append(f"{exc} — skipped")  # load_wav already names the file
             continue

@@ -176,7 +176,7 @@ def test_load_wav_downmixes_multichannel_to_first_channel(tmp_path):
     np.testing.assert_allclose(out, [left / 32768.0] * 3, rtol=1e-6)  # left kept
 
 
-def _write_wav(path, rate: int, frames: int = 10) -> None:
+def _write_wav(path, rate: int) -> None:
     """A silent 16-bit mono WAV at `rate` — just a header to load against."""
     import wave
 
@@ -184,7 +184,7 @@ def _write_wav(path, rate: int, frames: int = 10) -> None:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(rate)
-        w.writeframes(np.zeros(frames, dtype=np.int16).tobytes())
+        w.writeframes(np.zeros(10, dtype=np.int16).tobytes())
 
 
 def test_load_wav_rejects_a_wav_at_another_sample_rate(tmp_path):
@@ -200,11 +200,3 @@ def test_load_wav_rejects_a_wav_at_another_sample_rate(tmp_path):
     message = str(exc.value)
     assert "48000" in message and str(SAMPLE_RATE) in message
     assert "48k.wav" in message
-
-
-def test_load_wav_accepts_another_rate_when_the_caller_expects_it(tmp_path):
-    # The rate is the caller's knob (the bench runner passes the same rate it
-    # divides by for RTF), not a hardcoded 16k assumption inside the loader.
-    path = tmp_path / "8k.wav"
-    _write_wav(path, 8_000, frames=4)
-    assert load_wav(path, expected_rate=8_000).shape == (4,)

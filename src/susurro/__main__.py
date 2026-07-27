@@ -18,10 +18,17 @@ import time
 
 import numpy as np
 
-from ._cli import add_common_flags, apply_engine_audio, log, positive_float
+from ._cli import (
+    add_common_flags,
+    apply_engine_audio,
+    build_engine,
+    load_engine,
+    log,
+    positive_float,
+    preflight_language,
+)
 from .audio import Recorder, list_input_devices
 from .config import ConfigError, load_config
-from .engine import Engine, is_supported_language
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -57,29 +64,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     eng, aud = config.engine, config.audio
-    # Same pre-flight the daemon runs: Whisper validates the language deep inside its
-    # tokenizer, so an unchecked typo reaches the warmup below and is reported as a
-    # failed model load. Fails open if faster-whisper's code list can't be read.
-    if not is_supported_language(eng.language):
-        log(f"unsupported language {eng.language!r} — check --lang / [engine] language")
+    if not preflight_language(eng.language):
         return 1
 
     print(f"loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
-    try:
-        engine = Engine(
-            eng.model,
-            device=eng.device,
-            compute_type=eng.compute_type,
-            language=eng.language,
-            beam_size=eng.beam_size,
-            vad_filter=eng.vad_filter,
-        )
-        # Warm the CUDA kernels so the first real window already hits warm timing.
-        engine.transcribe(np.zeros(aud.sample_rate // 2, dtype=np.float32))
-    except Exception as exc:  # noqa: BLE001 (a startup failure gets a message, not a traceback)
-        # Typo'd model name, failed download, broken CUDA install: same clean
-        # `susurro: …` + exit 1 as a config error, naming the model and device.
-        log(f"failed to load model {eng.model!r} on {eng.device}: {exc}")
+    engine = load_engine(eng, lambda: build_engine(eng), sample_rate=aud.sample_rate)
+    if engine is None:
         return 1
 
     recorder = Recorder(

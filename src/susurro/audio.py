@@ -143,16 +143,14 @@ def list_input_devices() -> list[tuple[int, str]]:
     return [(i, d["name"]) for i, d in enumerate(sd.query_devices()) if d["max_input_channels"] > 0]
 
 
-def load_wav(path: str | Path, *, expected_rate: int = SAMPLE_RATE) -> np.ndarray:
-    """Load a 16-bit PCM WAV as mono float32 in [-1, 1], at `expected_rate` only.
+def load_wav(path: str | Path) -> np.ndarray:
+    """Load a 16-bit PCM WAV as mono float32 in [-1, 1], at `SAMPLE_RATE` only.
 
     Feeds the Engine offline (without a mic) for tests and model evaluation.
 
     A file at any other rate is **rejected**, not returned: nothing here resamples,
     so a 48kHz take handed to Whisper as 16kHz transcribes as garbage *and* is
-    scored against a duration off by the rate ratio — both silently. The rate is a
-    parameter so the caller's one assumed rate (the divisor it uses for RTF) is the
-    same value the file is checked against, and can't drift from it.
+    scored against a duration off by the rate ratio — both silently.
     """
     with wave.open(str(path), "rb") as w:
         n_channels = w.getnchannels()
@@ -164,9 +162,9 @@ def load_wav(path: str | Path, *, expected_rate: int = SAMPLE_RATE) -> np.ndarra
     # warnings, where "which recording?" is the only actionable part.
     if sampwidth != 2:
         raise ValueError(f"{path}: expected 16-bit PCM WAV, got sampwidth={sampwidth}")
-    if framerate != expected_rate:
+    if framerate != SAMPLE_RATE:
         raise ValueError(
-            f"{path}: expected {expected_rate} Hz audio, got {framerate} Hz "
+            f"{path}: expected {SAMPLE_RATE} Hz audio, got {framerate} Hz "
             "(nothing here resamples — re-record it at the expected rate)"
         )
 

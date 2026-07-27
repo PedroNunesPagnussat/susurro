@@ -21,7 +21,6 @@ import argparse
 import sys
 
 from . import registry
-from .paths import BenchPathError
 
 
 def parse_models(value: str | None) -> list[str] | None:
@@ -91,21 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_models:
         return _list_models()
 
-    # `bench_dir()` resolves lazily inside the command bodies, so its failure surfaces
-    # here. Caught at the one boundary both commands pass through, so a missing bench
-    # tree reads like every other error (`susurro-bench: ...`) instead of a traceback.
-    try:
-        if args.command == "record":
-            from .recording import record_command
+    if args.command == "record":
+        from .recording import record_command
 
-            return record_command(args)
-        if args.command == "run":
-            from .runner import run_command
+        return record_command(args)
+    if args.command == "run":
+        from .runner import run_command
 
-            return run_command(args)
-    except BenchPathError as exc:
-        print(f"susurro-bench: {exc}", file=sys.stderr)
-        return 1
+        return run_command(args)
 
     parser.print_help(sys.stderr)
     return 2

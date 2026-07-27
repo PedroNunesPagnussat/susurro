@@ -6,10 +6,9 @@ given what's on disk and the flags), and `resolve_audio` (the `[audio]` settings
 capture with). `record_command` is the interactive shell around them — it drives the
 real `Recorder` and prompts a person, so it's verified by hand, not in a unit test.
 
-Capture settings come from the same `config.toml` the daemon reads rather than from
-hardcoded defaults: a `[audio] device` that the owner needed to set for dictation is
-exactly the one needed here, and capturing ten silent takes from the wrong input is
-only discovered after the fact.
+Capture settings come from the same `config.toml` the daemon reads, not hardcoded
+defaults: an `[audio] device` the owner needed for dictation is the one needed here,
+and ten silent takes from the wrong input are only discovered after the fact.
 """
 
 from __future__ import annotations
@@ -82,10 +81,9 @@ def resolve_audio(args: argparse.Namespace) -> AudioConfig:
     layered on top (built-in defaults < config file < CLI flag — the same precedence
     `susurro` and `susurro-daemon` use).
 
-    Raises `ConfigError` on a bad config *and* on a sample rate the harness can't
-    benchmark: every backend is promised 16kHz mono (`bench/transcriber.py`) and
-    nothing resamples, so a non-16k rate is refused here — before ten scripts get
-    read into files `run` would only reject later."""
+    Raises `ConfigError` on a bad config *and* on a rate the harness can't benchmark:
+    every backend is promised 16kHz mono and nothing resamples, so a non-16k rate is
+    refused here, before ten scripts get read into files `run` would only reject."""
     config = load_config(args.config)
     if config.audio.sample_rate != SAMPLE_RATE:
         raise ConfigError(

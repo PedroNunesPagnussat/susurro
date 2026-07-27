@@ -234,7 +234,8 @@ uv run susurro-bench run              # transcribe every recording with every mo
 it, `--device` to override the input), so you benchmark the mic you actually dictate
 with. It requires `sample_rate = 16000`: nothing in the harness resamples, and a clip
 recorded at another rate would be transcribed as garbage at a bogus RTF. `run` skips
-any clip that isn't 16 kHz 16-bit mono with a warning rather than scoring it.
+any clip that isn't 16 kHz 16-bit PCM (or isn't a readable WAV at all) with a warning
+rather than scoring it; a multichannel clip is downmixed to its first channel.
 
 Full workflow, metric definitions, and the keep-or-switch results table live in
 [`bench/README.md`](bench/README.md).
@@ -272,7 +273,6 @@ tests/
   test_engine.py     # skipped when no CUDA/model
   test_bench_registry.py  test_bench_transcriber.py  test_bench_cli.py
   test_bench_recording.py  test_bench_wer.py  test_bench_runner.py
-  test_bench_paths.py
   test_bench_faster_whisper.py  # skipped when no CUDA/model
   fixtures/
 ```

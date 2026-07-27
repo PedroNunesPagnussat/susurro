@@ -1,10 +1,10 @@
 """Shared CLI plumbing for the two entrypoints (`susurro-daemon`, `susurro`).
 
-Both CLIs parse the same engine/audio flags and layer them over the loaded config
-the same way; this is the one place that logic lives so adding an engine flag is a
-single edit, not shotgun surgery across both `main`s. The daemon adds its own
-`--max-record`/`--idle-timeout`/`--no-notify` on top; the mic test adds
-`--duration`/`--list-devices`.
+Both CLIs parse the same engine/audio flags, layer them over the loaded config the
+same way, and start the model the same way; this is the one place that logic lives
+so adding an engine knob is a single edit, not shotgun surgery across both `main`s.
+The daemon adds its own `--max-record`/`--idle-timeout`/`--no-notify` on top; the
+mic test adds `--duration`/`--list-devices`.
 """
 
 from __future__ import annotations
@@ -12,9 +12,13 @@ from __future__ import annotations
 import argparse
 import math
 import sys
+from collections.abc import Callable
 from dataclasses import replace
 
-from .config import Config, pick
+import numpy as np
+
+from .config import Config, EngineConfig, pick
+from .engine import Engine, is_supported_language
 
 
 def log(msg: str) -> None:
@@ -85,3 +89,49 @@ def apply_engine_audio(config: Config, args: argparse.Namespace) -> Config:
     )
     audio = replace(config.audio, device=pick(args.device, config.audio.device))
     return replace(config, engine=engine, audio=audio)
+
+
+def preflight_language(code: str) -> bool:
+    """True if Whisper will accept `code`; else log why and return False.
+
+    Whisper validates the language only at the warmup transcribe, where a typo'd
+    `--lang` surfaces as a failed *model* load, blaming the model name and inlining
+    all 100 accepted codes. Both entrypoints check here first. Fails open (see
+    `engine.is_supported_language`)."""
+    if is_supported_language(code):
+        return True
+    log(f"unsupported language {code!r} — check --lang / [engine] language")
+    return False
+
+
+def build_engine(cfg: EngineConfig) -> Engine:
+    """`Engine` from the resolved `[engine]` config — the one place those fields map
+    onto the constructor, so a new knob is a single edit."""
+    return Engine(
+        cfg.model,
+        device=cfg.device,
+        compute_type=cfg.compute_type,
+        language=cfg.language,
+        beam_size=cfg.beam_size,
+        vad_filter=cfg.vad_filter,
+    )
+
+
+def load_engine[E](cfg: EngineConfig, build: Callable[[], E], *, sample_rate: int) -> E | None:
+    """Build the engine and warm it, or report the failure and return None.
+
+    `build` absorbs the entrypoints' one difference (the mic test wants an `Engine`,
+    the daemon a `LazyEngine` around one). The warmup is where a bad model name,
+    failed download or broken CUDA install surfaces — a `LazyEngine` defers the load
+    until the first transcribe — and it leaves the kernels compiled, so the first
+    real utterance already hits warm timing. `E` needs only a `transcribe`."""
+    try:
+        engine = build()
+        engine.transcribe(np.zeros(sample_rate // 2, dtype=np.float32))
+    except Exception as exc:  # noqa: BLE001 (a startup failure gets a message, not a traceback)
+        # Report it like a config error (same `susurro: …` + exit 1) instead of
+        # dumping a stack trace into a log nobody reads. Name the model and the
+        # device — they're the knobs.
+        log(f"failed to load model {cfg.model!r} on {cfg.device}: {exc}")
+        return None
+    return engine

@@ -9,15 +9,13 @@ a second — one notification, two states.
 
 Never raises: notifications are cosmetic, so a missing/failed/stuck `notify-send`
 is swallowed (surfaced on stderr) rather than crashing the long-lived daemon or
-wedging its single-threaded accept loop. The generous `subprocess` timeout is a
-pathological-hang backstop, not a latency knob — notify-send returns immediately.
+wedging its single-threaded accept loop.
 
 Cosmetic, but not optional: the daemon is autostarted from Hyprland's `exec-once`,
 so stderr goes nowhere and these toasts are the *only* channel to the user. Both
 `done` and `language` therefore take a keyword-only outcome flag so a failure
 (wtype didn't type it; the language code was rejected) is reported here instead of
-being dressed up as success. The flags default to the success value so a caller
-that doesn't know about them can't accidentally claim a failure.
+being dressed up as success, defaulting to the success value.
 """
 
 from __future__ import annotations
@@ -25,13 +23,10 @@ from __future__ import annotations
 import subprocess
 import sys
 
-# mako/dunst collapse toasts sharing this hint into one slot -> the stop toast
-# replaces the persistent recording one rather than stacking a second.
 _SYNC_HINT = "string:x-canonical-private-synchronous:susurro"
 _APP = "susurro"
-# Generous: notify-send should return at once; this only kills a stuck spawn so
-# it can't wedge the accept loop. Not a latency knob. Canonical default that also
-# backs `NotifyConfig.timeout_s` (single source of truth).
+# Generous: only kills a stuck spawn so it can't wedge the accept loop, not a
+# latency knob. Also backs `NotifyConfig.timeout_s` (single source of truth).
 DEFAULT_TIMEOUT_S = 5.0
 # Friendly display names for the language toasts; unknown codes show the raw code.
 _LANG_NAMES = {"en": "English", "pt": "Português"}
@@ -72,9 +67,8 @@ class Notifier:
         # stop (even empty/failed), else the -t 0 toast would hang on screen.
         body = text.strip() or "(no speech)"
         if not injected:
-            # wtype couldn't type it (missing binary, compositor refusal). Say so
-            # instead of "✓ Done": normal urgency and a longer dwell so it's noticed,
-            # and the transcript stays in the body so the words aren't simply lost.
+            # wtype couldn't type it. Longer dwell so it's noticed, and the transcript
+            # stays in the body so the words aren't simply lost.
             _send(
                 "-t",
                 "8000",
@@ -91,9 +85,8 @@ class Notifier:
         # Transient confirmation of a live language switch. Shares the sync slot,
         # so it's a quick standalone toast (you switch while not recording).
         if not supported:
-            # The switch was refused, so nothing changed. Name the offending code:
-            # the alternative was a confirming toast followed by every later
-            # utterance silently failing inside the model.
+            # Refused, so nothing changed. Name the code: the alternative was a
+            # confirming toast, then every later utterance silently failing.
             _send(
                 "-t",
                 "5000",

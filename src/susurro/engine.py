@@ -4,10 +4,8 @@
 single `transcribe(audio) -> str`. Nothing UI- or driver-specific lives here, so
 the daemon, the mic test, and the eval harness all share one transcription path.
 
-This module also owns the one piece of *knowledge* about faster-whisper that
-callers need before a model exists: which language codes it accepts
-(`is_supported_language`). Whisper only validates the code deep inside
-`transcribe`, which is far too late for a hold-to-talk UI — see that function.
+It also owns the one thing callers need to know before a model exists: which
+language codes faster-whisper accepts (`is_supported_language`).
 """
 
 from __future__ import annotations
@@ -30,14 +28,12 @@ def _language_codes() -> frozenset[str] | None:
     """faster-whisper's static list of accepted language codes, or None if it can't
     be read.
 
-    Deliberately defensive on two axes. (1) The import is lazy — like `Engine`'s —
-    so `import susurro.engine` still doesn't drag in CTranslate2/CUDA for callers
-    that only want the formatter or audio helpers. (2) `_LANGUAGE_CODES` is a
-    *private* name (the only static list there is; `WhisperModel.supported_languages`
-    needs a loaded model, which we may not have), so a future release can move or
-    rename it. Returning None then degrades validation to "accept anything", which
-    is exactly today's behaviour; a hard failure here would break dictation
-    entirely, which is far worse than the mistake being guarded against.
+    Lazy import — like `Engine`'s — so `import susurro.engine` doesn't drag in
+    CTranslate2/CUDA for callers that only want the formatter or audio helpers.
+    `_LANGUAGE_CODES` is *private* (the only static list there is;
+    `WhisperModel.supported_languages` needs a loaded model), so a future release
+    can move it. Returning None degrades validation to "accept anything" rather
+    than breaking dictation entirely.
     """
     try:
         from faster_whisper.tokenizer import _LANGUAGE_CODES
@@ -52,13 +48,11 @@ def _language_codes() -> frozenset[str] | None:
 def is_supported_language(code: str) -> bool:
     """True if faster-whisper will accept `code` as a transcription language.
 
-    Whisper takes the language as a per-`transcribe` argument and only validates it
-    when it builds the tokenizer, i.e. one utterance *after* the user asked for it
-    (`faster_whisper/tokenizer.py` raises "'xx' is not a valid language code").
-    Callers use this to reject a typo at the moment it's made, while the model is
-    possibly not even loaded. Fails open: if the code list can't be read, every code
-    is accepted and Whisper's own late error is the backstop (see `_language_codes`).
-    Matching is exact, as Whisper's is — it does not lower-case the code either.
+    Whisper only validates the language when it builds the tokenizer, i.e. one
+    utterance *after* the user asked for it. Callers use this to reject a typo at the
+    moment it's made, while the model may not even be loaded. Fails open: if the code
+    list can't be read, every code is accepted and Whisper's own late error is the
+    backstop. Matching is exact, as Whisper's is.
     """
     codes = _language_codes()
     return True if codes is None else code in codes
