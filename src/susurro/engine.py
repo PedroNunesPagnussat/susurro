@@ -3,6 +3,11 @@
 `Engine` owns the warm faster-whisper model (loaded once, reused) and exposes a
 single `transcribe(audio) -> str`. Nothing UI- or driver-specific lives here, so
 the daemon, the mic test, and the eval harness all share one transcription path.
+
+It also owns the two things callers need before a model exists: which language codes
+faster-whisper accepts (`is_supported_language`), and how an `[engine]` config
+becomes a warm engine (`build_engine` / `load_engine`). Both entrypoints go through
+those, so adding an engine knob is one edit here, not a change to the CLI module.
 """
 
 from __future__ import annotations
@@ -10,13 +15,55 @@ from __future__ import annotations
 import gc
 import sys
 from collections.abc import Callable
+from functools import lru_cache
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ._cuda import preload_cuda_libs
 from .formatter import Formatter, RuleBasedFormatter
 
+if TYPE_CHECKING:
+    # Type-only: `config` imports `DEFAULT_MODEL` from here, so a real import would
+    # be a cycle. `from __future__ import annotations` keeps the annotation a string.
+    from .config import EngineConfig
+
 DEFAULT_MODEL = "large-v3-turbo"
+
+
+@lru_cache(maxsize=1)
+def _language_codes() -> frozenset[str] | None:
+    """faster-whisper's static list of accepted language codes, or None if it can't
+    be read.
+
+    Lazy import — like `Engine`'s — so `import susurro.engine` doesn't drag in
+    CTranslate2/CUDA for callers that only want the formatter or audio helpers.
+    `_LANGUAGE_CODES` is *private* (the only static list there is;
+    `WhisperModel.supported_languages` needs a loaded model), so a future release
+    can move it. Returning None degrades validation to "accept anything" rather
+    than breaking dictation entirely.
+    """
+    try:
+        from faster_whisper.tokenizer import _LANGUAGE_CODES
+    except Exception:  # noqa: BLE001 (a moved/renamed private name must not break us)
+        return None
+    try:
+        return frozenset(_LANGUAGE_CODES)
+    except TypeError:  # not iterable any more -> same degrade-to-permissive path
+        return None
+
+
+def is_supported_language(code: str) -> bool:
+    """True if faster-whisper will accept `code` as a transcription language.
+
+    Whisper only validates the language when it builds the tokenizer, i.e. one
+    utterance *after* the user asked for it. Callers use this to reject a typo at the
+    moment it's made, while the model may not even be loaded. Fails open: if the code
+    list can't be read, every code is accepted and Whisper's own late error is the
+    backstop. Matching is exact, as Whisper's is.
+    """
+    codes = _language_codes()
+    return True if codes is None else code in codes
 
 
 class Engine:
@@ -133,3 +180,47 @@ class LazyEngine:
         self._engine = None
         gc.collect()  # run the CTranslate2 destructor now so VRAM frees promptly
         self._log("susurro: model unloaded (idle) — VRAM released")
+
+
+class EngineLoadError(RuntimeError):
+    """Startup failure: the model couldn't be built or warmed (bad model name, failed
+    download, broken CUDA install). Its message already names the model and the device
+    — the two knobs — so a caller can print it without re-deriving the context."""
+
+
+def build_engine(cfg: EngineConfig, *, lazy: bool = False) -> Engine | LazyEngine:
+    """An engine from the resolved `[engine]` config — the one place those fields map
+    onto the constructor, so a new knob is a single edit.
+
+    `lazy=True` wraps it in a `LazyEngine` (what the daemon holds, so an idle daemon
+    can drop the model and free VRAM); the mic test wants the plain `Engine`. Both
+    shapes live here because `LazyEngine` does.
+    """
+
+    def factory() -> Engine:
+        return Engine(
+            cfg.model,
+            device=cfg.device,
+            compute_type=cfg.compute_type,
+            language=cfg.language,
+            beam_size=cfg.beam_size,
+            vad_filter=cfg.vad_filter,
+        )
+
+    return LazyEngine(factory, language=cfg.language) if lazy else factory()
+
+
+def load_engine(cfg: EngineConfig, *, sample_rate: int, lazy: bool = False) -> Engine | LazyEngine:
+    """Build the engine and warm it, or raise `EngineLoadError`.
+
+    The warmup transcribe is where a bad model name, a failed download or a broken
+    CUDA install surfaces — a `LazyEngine` defers the build to its first transcribe,
+    so without it the daemon would report the failure one utterance later — and it
+    leaves the kernels compiled, so the first real utterance already hits warm timing.
+    """
+    try:
+        engine = build_engine(cfg, lazy=lazy)
+        engine.transcribe(np.zeros(sample_rate // 2, dtype=np.float32))
+    except Exception as exc:
+        raise EngineLoadError(f"failed to load model {cfg.model!r} on {cfg.device}: {exc}") from exc
+    return engine

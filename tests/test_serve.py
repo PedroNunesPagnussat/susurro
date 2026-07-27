@@ -108,6 +108,30 @@ def test_serve_once_timeout_runs_safety_and_idle_checks(tmp_path):
     assert daemon.events == ["check_timeout", "check_idle"]
 
 
+def test_serve_once_caps_a_huge_deadline_instead_of_dying(tmp_path, monkeypatch):
+    # `settimeout()` raises OverflowError above ~9.2e9 seconds, and that call sits
+    # *outside* `_serve_once`'s try — an unclamped deadline escaped the loop body,
+    # escaped `serve()`'s KeyboardInterrupt-only handler, and killed the daemon on
+    # its first iteration, right after paying the full model load. Config and flags
+    # are capped at input; this is the backstop that makes the crash impossible.
+    # The cap is shrunk here so the (correctly clamped) accept() returns at once.
+    monkeypatch.setattr(daemon_mod, "MAX_SECONDS", 0.05)
+    srv = _server(tmp_path)
+    daemon = FakeDaemon(idle_remaining=1e12)
+    try:
+        _serve_once(srv, daemon)  # must not raise OverflowError
+    finally:
+        srv.close()
+    assert daemon.events == ["check_timeout", "check_idle"]  # clamped -> timed out
+
+
+def test_max_seconds_is_itself_a_usable_timeout():
+    # The bound only helps if it's under the platform's own limit — pin that here
+    # rather than trusting the comment next to the constant.
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.settimeout(daemon_mod.MAX_SECONDS)
+
+
 def test_serve_once_survives_a_raising_auto_stop(tmp_path, capsys):
     # A failing auto-stop (transcribe/recorder error on the safety-window path) must
     # be caught and aborted, exactly like a failing command — never crash the loop.

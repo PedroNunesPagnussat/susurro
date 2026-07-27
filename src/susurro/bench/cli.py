@@ -8,7 +8,11 @@ The subcommand bodies lazy-import their implementation (`recording` for `record`
 
     uv run susurro-bench --list-models   # ids + availability, then exit
     uv run susurro-bench record          # read the scripts into bench/recordings/
+    uv run susurro-bench record --device 4   # capture from a specific input
     uv run susurro-bench run             # transcribe + score + report
+
+`record` reads the same `[audio]` config the daemon does, so the input you already
+configured is the one it captures from.
 """
 
 from __future__ import annotations
@@ -53,6 +57,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--redo",
         action="store_true",
         help="re-record scripts that already have a recording",
+    )
+    # Same spelling and precedence as `susurro`/`susurro-daemon` (defaults < config
+    # file < flag). `--device` stays a raw string here — `_cli.parse_device` turns it
+    # into an index or a name substring in the command body, because importing the
+    # config layer at parser-build time would break this module's import-light
+    # contract for `--help` and `--list-models`.
+    rec.add_argument("--config", default=None, help="path to config.toml")
+    rec.add_argument(
+        "--device", default=None, help="input device index or name (overrides [audio] device)"
     )
 
     run = sub.add_parser("run", help="transcribe every recording with every model, report")

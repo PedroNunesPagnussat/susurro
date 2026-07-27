@@ -99,6 +99,74 @@ def test_discover_pairs_scripts_and_recordings_by_stem(tmp_path):
     assert "d" in warn_text  # orphan recording is flagged
 
 
+def test_discover_skips_a_recording_at_the_wrong_sample_rate(tmp_path):
+    # An off-rate take can't be scored: no backend resamples, and RTF divides by the
+    # harness rate. Drop it with a warning naming the file and both rates rather than
+    # transcribe it at the wrong speed — and keep the rest of the eval set running.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    save_wav(recs / "b.wav", np.zeros(48_000, dtype=np.float32), sample_rate=48_000)
+
+    clips, warnings = discover_clips(scripts, recs)
+
+    assert [c.id for c in clips] == ["a"]  # the good clip still runs
+    warn_text = " ".join(warnings)
+    assert "b.wav" in warn_text
+    assert "48000" in warn_text and str(SAMPLE_RATE) in warn_text
+
+
+@pytest.mark.parametrize(
+    ("label", "content"),
+    [("truncated", b""), ("not-riff", b"not a wav at all")],
+)
+def test_discover_skips_a_recording_that_is_not_a_readable_wav(tmp_path, label, content):
+    # `wave.open` rejects these *before* load_wav's rate/width checks, and with
+    # EOFError / wave.Error rather than ValueError — so they used to escape
+    # `discover_clips` as a traceback and take every good clip down with them. A
+    # 0-byte take is what a Ctrl-C during `save_wav` leaves behind.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    (recs / "b.wav").write_bytes(content)
+
+    clips, warnings = discover_clips(scripts, recs)  # must not raise
+
+    assert [c.id for c in clips] == ["a"]  # the good clip still runs
+    warn_text = " ".join(warnings)
+    assert "b.wav" in warn_text  # EOFError carries no message; the file must be named
+    assert "skipped" in warn_text
+
+
+def test_discover_names_the_file_on_a_half_written_take(tmp_path):
+    # The other Ctrl-C shape: a header claiming more samples than the data chunk
+    # holds. numpy's "buffer size must be a multiple of element size" carries no
+    # filename, so this warning used to name no recording at all — unactionable
+    # across a ten-script eval set.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    save_wav(recs / "b.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    (recs / "b.wav").write_bytes((recs / "b.wav").read_bytes()[:-1])  # chop a byte
+
+    clips, warnings = discover_clips(scripts, recs)  # must not raise
+
+    assert [c.id for c in clips] == ["a"]
+    assert "b.wav" in " ".join(warnings)
+
+
 # --- measurement: warm-up + median-of-N + RTF ------------------------------
 
 

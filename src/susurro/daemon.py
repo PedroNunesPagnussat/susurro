@@ -29,11 +29,23 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
-from ._cli import add_common_flags, apply_engine_audio, positive_float
+from ._cli import (
+    add_common_flags,
+    apply_engine_audio,
+    positive_seconds,
+    preflight_language,
+    seconds,
+    start_engine,
+)
+
+# Shared with the mic test so both entrypoints shape their `susurro: …` stderr lines
+# identically; also `Daemon`'s default `log`, which stays injectable (tests silence
+# it with `log=lambda _msg: None`).
+from ._cli import log as _log
 from ._ipc import socket_path
 from .audio import Recorder
-from .config import DEFAULT_MAX_RECORD_S, Config, ConfigError, load_config, pick
-from .engine import Engine, LazyEngine
+from .config import DEFAULT_MAX_RECORD_S, MAX_SECONDS, Config, ConfigError, load_config, pick
+from .engine import is_supported_language
 from .inject import inject
 from .notify import Notifier, NullNotifier
 
@@ -60,10 +72,8 @@ class _Transcriber(Protocol):
 class _ManagedEngine(_Transcriber, Protocol):
     """A `_Transcriber` that can also be unloaded/reloaded (real: `engine.LazyEngine`).
 
-    Runtime-checkable so the daemon can detect at construction whether idle-unload
-    is even possible: a plain engine without this capability just disables it. It
-    extends `_Transcriber`, so a value narrowed to `_ManagedEngine` is still a full
-    transcriber (no separate reference needed for `transcribe`/`set_language`).
+    Runtime-checkable so the daemon can detect at construction whether idle-unload is
+    possible: a plain engine without this capability just disables it.
     """
 
     @property
@@ -73,11 +83,15 @@ class _ManagedEngine(_Transcriber, Protocol):
 
 
 class _Notifier(Protocol):
-    """Structural type for the notification seam (real: `notify.Notifier`)."""
+    """Structural type for the notification seam (real: `notify.Notifier`).
+
+    `done`/`language` carry a keyword-only outcome flag: under `exec-once` the toast
+    is the only channel to the user, so a failure has to be *reported*, not implied
+    by a missing one."""
 
     def recording(self, language: str) -> None: ...
-    def done(self, text: str) -> None: ...
-    def language(self, code: str) -> None: ...
+    def done(self, text: str, *, injected: bool = True) -> None: ...
+    def language(self, code: str, *, supported: bool = True) -> None: ...
 
 
 # Two-way language toggle (Super+Shift+D). Kept a small map so more codes can be
@@ -97,14 +111,16 @@ class Daemon:
         self,
         recorder: _Capturer,
         engine: _Transcriber,
-        inject: Callable[[str], None],
+        # Returns whether the text actually landed, so `stop` can tell the truth in
+        # the toast instead of claiming success on a failed/missing wtype.
+        inject: Callable[[str], bool],
         *,
         notify: _Notifier | None = None,
         language: str = "en",
         max_record_s: float = DEFAULT_MAX_RECORD_S,
         idle_timeout_s: float | None = None,
         clock: Callable[[], float] = time.monotonic,
-        log: Callable[[str], None] = lambda msg: print(msg, file=sys.stderr, flush=True),
+        log: Callable[[str], None] = _log,
     ) -> None:
         self._recorder = recorder
         self._engine = engine
@@ -112,9 +128,8 @@ class Daemon:
         self._notify = notify or NullNotifier()
         self._language = language
         self._max_record_s = max_record_s
-        # A managed engine can be idle-unloaded and preloaded; a plain one can't.
-        # Hold the narrowed reference (not just a bool) so the load/unload calls need
-        # no casts: `self._managed is None` means the capability is absent.
+        # Hold the narrowed reference (not just a bool) so load/unload need no casts:
+        # `self._managed is None` means the engine can't be idle-unloaded.
         self._managed: _ManagedEngine | None = (
             engine if isinstance(engine, _ManagedEngine) else None
         )
@@ -140,9 +155,19 @@ class Daemon:
         `code` is a language code (`en`/`pt`/…) or `"toggle"` to flip en<->pt.
         The daemon owns the canonical language (drives the toggle + the recording
         toast) and pushes it to the engine — no model reload. Returns the code now
-        active."""
+        active, which is the *unchanged* one if `code` was rejected.
+
+        An unsupported code is rejected here rather than left to blow up inside the
+        model one utterance later (Whisper only validates at transcribe time, so
+        `lang xx` used to confirm success then silently discard every recording).
+        Handled, not raised: escaping into `_serve_once`'s catch-all would log to an
+        invisible stderr, needlessly `abort()` the capture state, and post no toast."""
         if code == "toggle":
             code = _LANG_TOGGLE.get(self._language, "pt")
+        if not is_supported_language(code):
+            self._log(f"unsupported language {code!r} — keeping {self._language!r}")
+            self._notify.language(code, supported=False)
+            return self._language
         self._language = code
         self._engine.set_language(code)
         self._notify.language(code)
@@ -170,11 +195,9 @@ class Daemon:
         self._preload()
 
     def _preload(self) -> None:
-        """Best-effort model rebuild on the press. If the engine was idle-unloaded,
-        build it now so the multi-second load overlaps the user speaking; a plain
-        (non-managed) or already-loaded engine is a no-op. Never raises — a failed
-        preload just leaves the release-path `transcribe` to reload and surface the
-        error, so a press is never worse than before this optimization existed."""
+        """Best-effort model rebuild on the press, so a multi-second reload overlaps
+        the user speaking; a plain or already-loaded engine is a no-op. Never raises —
+        a failed preload leaves the release-path `transcribe` to reload and report."""
         managed = self._managed
         if managed is None or managed.loaded:
             return
@@ -186,7 +209,10 @@ class Daemon:
     def stop(self) -> str:
         """End capture, transcribe -> format -> inject, and return the emitted
         text. A `stop` with no active recording is a harmless no-op (a release
-        that arrived after a safety auto-stop, or with no matching press)."""
+        that arrived after a safety auto-stop, or with no matching press).
+
+        The returned text is what was *transcribed*; whether it reached the focused
+        window is reported in the stop toast, since `inject` never raises."""
         if not self._recording:
             self._log("stop with no active recording — ignored")
             return ""
@@ -195,16 +221,19 @@ class Daemon:
         self._recording = False
         self._last_use = self._clock()  # activity: restart the idle-unload countdown
         text = ""
+        # Nothing to type is not a typing failure: an empty transcript (and a
+        # transcribe that raised) must still show "(no speech)", not "not typed".
+        injected = True
         try:
             audio = self._recorder.stop()
             text = self._engine.transcribe(audio)
             if text:
-                self._inject(text)
+                injected = self._inject(text)
             return text
         finally:
             # Always replace the persistent recording toast, even if transcribe/
             # inject raised — otherwise the -t 0 toast hangs on screen forever.
-            self._notify.done(text)
+            self._notify.done(text, injected=injected)
 
     def remaining(self) -> float | None:
         """Seconds left before the safety auto-stop, or None when idle. `serve()`
@@ -217,9 +246,8 @@ class Daemon:
         """Safety auto-stop: if the max record duration elapsed, stop as if a
         `stop` arrived (returns the emitted text); else None. This is the
         anti-wedge backstop for a dropped release."""
-        # remaining() == 0.0 iff recording *and* the deadline has passed (it returns
-        # None when idle, and clamps to 0.0 at/after the deadline) — one source for
-        # the fire condition.
+        # remaining() == 0.0 iff recording *and* past the deadline (None when idle) —
+        # one source for the fire condition.
         if self.remaining() == 0.0:
             self._log(f"safety auto-stop after {self._max_record_s:.0f}s (missed release?)")
             return self.stop()
@@ -241,8 +269,8 @@ class Daemon:
         """Drop the warm model if it's been idle past the timeout, freeing VRAM.
         Returns True iff it unloaded. No-op while recording, when disabled, or when
         the model is already unloaded."""
-        # idle_remaining() == 0.0 iff idle-unload is armed, not recording, the model
-        # is loaded, and the timeout has elapsed — so `self._managed` is non-None here.
+        # idle_remaining() == 0.0 iff armed, not recording, loaded, and elapsed —
+        # so `self._managed` is non-None here.
         if self.idle_remaining() != 0.0:
             return False
         managed = self._managed
@@ -274,23 +302,27 @@ def _dispatch(daemon: Daemon, cmd: str) -> None:
         # `lang <code>` sets it explicitly; bare `lang` flips en<->pt.
         daemon.set_language(parts[1] if len(parts) > 1 else "toggle")
     else:
-        print(f"susurro: unknown command {cmd!r}", file=sys.stderr, flush=True)
+        _log(f"unknown command {cmd!r}")
 
 
 def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
     """One iteration of the accept loop: wait for the nearer deadline, then either
     run the safety/idle checks (on timeout) or accept + dispatch one command.
 
-    Kept separate from the `while True` in `serve()` so the loop body — including the
-    two blocking points (accept and recv) and the dispatch-error recovery — is
-    unit-testable against a real socket without spinning up the forever loop.
+    Kept separate from the `while True` in `serve()` so the loop body is unit-testable
+    against a real socket without spinning up the forever loop.
     """
-    # Wake by the nearest of two deadlines: the recording auto-stop and the
+    # Wake on the nearest of two deadlines: the recording auto-stop and the
     # idle-unload. Either may be None (not armed); None -> block until a command.
     # Floor a tiny positive value so accept() stays in timeout mode (0.0 would flip
-    # the socket to non-blocking and busy-spin).
+    # the socket to non-blocking and busy-spin), and cap it at MAX_SECONDS because
+    # `settimeout()` raises OverflowError above ~9.2e9 — that call sits outside the
+    # try below, so it would escape `serve()` and kill the daemon outright. Config
+    # and flags are already capped at input; this is the backstop that makes the
+    # crash structurally impossible. Waking early is free: both checks are no-ops
+    # before their deadline.
     deadlines = [d for d in (daemon.remaining(), daemon.idle_remaining()) if d is not None]
-    srv.settimeout(None if not deadlines else max(min(deadlines), 0.05))
+    srv.settimeout(None if not deadlines else min(max(min(deadlines), 0.05), MAX_SECONDS))
     try:
         conn, _ = srv.accept()
     except TimeoutError:
@@ -301,7 +333,7 @@ def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
             daemon.check_timeout()  # safety window elapsed with no stop
             daemon.check_idle()  # idle window elapsed -> free VRAM
         except Exception as exc:  # noqa: BLE001 (keep the daemon alive)
-            print(f"susurro: auto-stop/idle check failed: {exc}", file=sys.stderr, flush=True)
+            _log(f"auto-stop/idle check failed: {exc}")
             daemon.abort()  # never leave the mic stuck open on an error
         return
     with conn:
@@ -312,12 +344,12 @@ def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
         try:
             cmd = conn.recv(64).decode(errors="replace").strip()
         except OSError as exc:  # stalled/reset client; TimeoutError is an OSError
-            print(f"susurro: dropping stalled client ({exc})", file=sys.stderr, flush=True)
+            _log(f"dropping stalled client ({exc})")
             return
     try:
         _dispatch(daemon, cmd)
     except Exception as exc:  # noqa: BLE001 (keep the daemon alive)
-        print(f"susurro: command {cmd!r} failed: {exc}", file=sys.stderr, flush=True)
+        _log(f"command {cmd!r} failed: {exc}")
         daemon.abort()  # never leave the mic stuck open on an error
 
 
@@ -353,19 +385,20 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     # Shared engine/audio flags come from `add_common_flags`; the rest are daemon-only.
-    # `--max-record` uses `positive_float` so a flag can't set a non-positive cap that
-    # the config file would have rejected (defaults < config file < CLI flag).
+    # `--max-record` takes `positive_seconds` so a flag can't set a cap the config file
+    # would have rejected. `--idle-timeout` can't: `<= 0` is its "stay resident"
+    # sentinel, so it takes `seconds` — non-positive legal, `nan`/`inf`/huge not.
     p = argparse.ArgumentParser(prog="susurro-daemon", description=__doc__)
     add_common_flags(p)
     p.add_argument(
         "--max-record",
-        type=positive_float,
+        type=positive_seconds,
         default=None,
         help="safety auto-stop after this many seconds",
     )
     p.add_argument(
         "--idle-timeout",
-        type=float,
+        type=seconds,
         default=None,
         help="unload the model to free VRAM after this many idle seconds (<=0 disables)",
     )
@@ -398,29 +431,21 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = _apply_cli(load_config(args.config), args)
     except ConfigError as exc:
-        print(f"susurro: {exc}", file=sys.stderr, flush=True)
+        _log(str(exc))
         return 1
 
     eng, aud, dae = config.engine, config.audio, config.daemon
+    if not preflight_language(eng.language):
+        return 1
+
     idle_timeout = dae.idle_timeout_s if dae.idle_timeout_s > 0 else None
 
     print(f"susurro daemon: loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
-    # LazyEngine so an idle daemon can drop the model and free VRAM, reloading via
-    # this factory on the next utterance.
-    engine = LazyEngine(
-        lambda: Engine(
-            eng.model,
-            device=eng.device,
-            compute_type=eng.compute_type,
-            language=eng.language,
-            beam_size=eng.beam_size,
-            vad_filter=eng.vad_filter,
-        ),
-        language=eng.language,
-    )
-    # Warm now so the first real utterance already hits warm timing (this also
-    # triggers the initial load); after an idle-unload the reload is lazy.
-    engine.transcribe(np.zeros(aud.sample_rate // 2, dtype=np.float32))
+    # `lazy=True`: a LazyEngine so an idle daemon can drop the model and free VRAM,
+    # rebuilding on the next utterance; after this warmup the reload is lazy.
+    engine = start_engine(eng, sample_rate=aud.sample_rate, lazy=True)
+    if engine is None:
+        return 1
 
     # Give the recorder headroom over the daemon timeout so the daemon's auto-stop
     # is always the authoritative stop; the recorder cap is a pure memory backstop.

@@ -144,19 +144,38 @@ def list_input_devices() -> list[tuple[int, str]]:
 
 
 def load_wav(path: str | Path) -> np.ndarray:
-    """Load a 16-bit PCM WAV as mono float32 in [-1, 1] at its native rate.
+    """Load a 16-bit PCM WAV as mono float32 in [-1, 1], at `SAMPLE_RATE` only.
 
     Feeds the Engine offline (without a mic) for tests and model evaluation.
+
+    A file at any other rate is **rejected**, not returned: nothing here resamples,
+    so a 48kHz take handed to Whisper as 16kHz transcribes as garbage *and* is
+    scored against a duration off by the rate ratio — both silently.
     """
     with wave.open(str(path), "rb") as w:
         n_channels = w.getnchannels()
         sampwidth = w.getsampwidth()
+        framerate = w.getframerate()
         frames = w.readframes(w.getnframes())
 
+    # Every message here names the file: the bench runner turns them into per-clip
+    # warnings, where "which recording?" is the only actionable part.
     if sampwidth != 2:
-        raise ValueError(f"expected 16-bit PCM WAV, got sampwidth={sampwidth}")
+        raise ValueError(f"{path}: expected 16-bit PCM WAV, got sampwidth={sampwidth}")
+    if framerate != SAMPLE_RATE:
+        raise ValueError(
+            f"{path}: expected {SAMPLE_RATE} Hz audio, got {framerate} Hz "
+            "(nothing here resamples — re-record it at the expected rate)"
+        )
 
-    data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if n_channels > 1:
-        data = data.reshape(-1, n_channels)[:, 0]
+    try:
+        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        if n_channels > 1:
+            data = data.reshape(-1, n_channels)[:, 0]
+    except ValueError as exc:
+        # A truncated data chunk (Ctrl-C during `save_wav`) or one that doesn't
+        # divide by the channel count: numpy's message ("buffer size must be a
+        # multiple of element size") carries no filename, so wrap it with one —
+        # otherwise the bench warning names no recording and the user can't act.
+        raise ValueError(f"{path}: malformed PCM data ({exc})") from exc
     return data

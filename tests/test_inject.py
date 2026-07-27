@@ -5,6 +5,10 @@ the command built (`["wtype", "--", text]`), the empty/whitespace no-op (no subp
 call at all), and the never-crash-*or*-wedge-the-daemon contract: a non-zero
 return, a missing binary, and a hung spawn (timeout) are all surfaced on stderr
 without raising, and a spawn timeout is always passed.
+
+Also the return value, which the daemon turns into the stop toast: True only when
+the text actually landed, False on every failure path (never an exception), and
+True for the empty no-op — nothing to type is not a typing failure.
 """
 
 import subprocess
@@ -18,7 +22,7 @@ from susurro.inject import inject
 def test_inject_runs_wtype_with_text():
     with mock.patch("susurro.inject.subprocess.run") as run:
         run.return_value = mock.Mock(returncode=0, stderr="")
-        inject("hello world")
+        assert inject("hello world") is True  # typed -> the daemon can claim success
     run.assert_called_once()
     (cmd,), _kwargs = run.call_args
     # `--` ends option parsing so a leading-dash transcript can't be read as a flag.
@@ -28,14 +32,16 @@ def test_inject_runs_wtype_with_text():
 @pytest.mark.parametrize("text", ["", "   ", "\n\t "])
 def test_empty_or_whitespace_text_is_noop(text):
     with mock.patch("susurro.inject.subprocess.run") as run:
-        inject(text)
+        # True, not False: there was nothing to type, so nothing failed — the daemon
+        # must not turn an empty transcript into a "not typed" toast.
+        assert inject(text) is True
     run.assert_not_called()  # nothing to type -> no wtype spawn
 
 
 def test_wtype_failure_is_surfaced_not_raised(capsys):
     with mock.patch("susurro.inject.subprocess.run") as run:
         run.return_value = mock.Mock(returncode=1, stderr="no compositor")
-        inject("hi")  # must not raise
+        assert inject("hi") is False  # must not raise, must report the failure
     err = capsys.readouterr().err
     assert "wtype failed" in err
     assert "no compositor" in err
@@ -44,8 +50,10 @@ def test_wtype_failure_is_surfaced_not_raised(capsys):
 def test_missing_wtype_binary_is_swallowed(capsys):
     # wtype not installed -> FileNotFoundError (an OSError). Must not raise: the
     # docstring's never-raises contract covers a missing binary, not just rc != 0.
+    # The most likely first-run failure, so the False return is what stops the
+    # daemon from toasting "✓ Done" over text that was never typed.
     with mock.patch("susurro.inject.subprocess.run", side_effect=FileNotFoundError("wtype")):
-        inject("hi")  # must not raise
+        assert inject("hi") is False  # must not raise
     assert "wtype failed" in capsys.readouterr().err
 
 
@@ -56,7 +64,7 @@ def test_hung_wtype_is_swallowed(capsys):
         "susurro.inject.subprocess.run",
         side_effect=subprocess.TimeoutExpired("wtype", 30.0),
     ):
-        inject("hi")  # must not raise
+        assert inject("hi") is False  # must not raise
     assert "wtype failed" in capsys.readouterr().err
 
 

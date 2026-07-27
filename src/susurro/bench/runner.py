@@ -20,6 +20,7 @@ from __future__ import annotations
 import statistics
 import sys
 import time
+import wave
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -86,7 +87,12 @@ def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip],
     """Pair `scripts/<id>.txt` (reference) with `recordings/<id>.wav` (audio) by
     shared stem, in script order. Returns `(clips, warnings)`: a script with no
     recording is skipped with a warning, and an orphan recording (no script) warns
-    too — neither aborts the run."""
+    too — neither aborts the run.
+
+    An unreadable or off-format take is dropped the same way: one bad file must not
+    cost the rest of the eval set. `SAMPLE_RATE` is both what the recordings must be
+    at and what the runner divides by for RTF, so a take at another rate is dropped
+    rather than transcribed at the wrong speed and timed against the wrong duration."""
     from .recording import recorded_ids, script_ids
 
     ids = script_ids(scripts_dir)
@@ -99,7 +105,20 @@ def discover_clips(scripts_dir: Path, recordings_dir: Path) -> tuple[list[Clip],
             warnings.append(f"no recording for script '{id_}' — skipped (record it first)")
             continue
         reference = (scripts_dir / f"{id_}.txt").read_text().strip()
-        clips.append(Clip(id=id_, reference=reference, audio=load_wav(wav)))
+        try:
+            audio = load_wav(wav)
+        except ValueError as exc:  # parsed, but unusable: wrong rate / not 16-bit
+            warnings.append(f"{exc} — skipped")  # load_wav already names the file
+            continue
+        except (EOFError, wave.Error) as exc:
+            # Not parseable at all, and raised by `wave.open` *before* load_wav's own
+            # checks — so neither is a ValueError, and both used to escape this loop,
+            # `run_command` and `cli.main` as a traceback that cost every good clip
+            # too. A 0-byte take (Ctrl-C during `save_wav`) raises EOFError with an
+            # empty message, a non-RIFF file raises wave.Error; name the file here.
+            warnings.append(f"{wav}: unreadable WAV ({str(exc) or type(exc).__name__}) — skipped")
+            continue
+        clips.append(Clip(id=id_, reference=reference, audio=audio))
     for orphan in sorted(recorded - set(ids)):
         warnings.append(f"recording '{orphan}' has no matching script — ignored")
     return clips, warnings
@@ -279,7 +298,9 @@ def run_command(args) -> int:
         print(f"susurro-bench: {warning}", file=sys.stderr)
     if not clips:
         print(
-            "susurro-bench: no recordings found — run `susurro-bench record` first",
+            # "usable": a take can also be dropped above (wrong rate/format), and
+            # then the warnings printed just now are the actionable part.
+            "susurro-bench: no usable recordings — run `susurro-bench record` first",
             file=sys.stderr,
         )
         return 1

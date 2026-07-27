@@ -62,6 +62,13 @@ works). The recording toast shows the active language (`🎙 Recording (pt)…`)
 transient `🌐 Português` toast confirms each switch. Boot straight into a language
 with `susurro-daemon --lang pt`.
 
+A code Whisper doesn't know is rejected at the switch, not one utterance later:
+the daemon keeps the current language and toasts `⚠ unknown language "xx"`. Without
+that check the switch looked like it worked, then the next recording died inside the
+tokenizer and the audio was lost. The same check runs at startup, so a typo in
+`--lang` or `[engine] language` fails loud (exit 1) naming the code, instead of
+surfacing later as a model-load error.
+
 There's also a no-daemon mic test that exercises capture + engine directly:
 
 ```sh
@@ -122,7 +129,7 @@ file; a bad type / range / enum makes startup fail loud (exit 1); an unknown key
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `sample_rate` | positive int | • Capture rate in Hz<br>• **Keep `16000`** — Whisper is trained on 16 kHz; other values get resampled and hurt quality |
+| `sample_rate` | must be `16000` (validated) | • Capture rate in Hz<br>• Whisper is trained on 16 kHz and *nothing here resamples*, so any other rate would reach the model as-is and transcribe as garbage — it's refused at startup rather than run silently wrong |
 | `channels` | positive int | • `1` = mono (what you want for speech) |
 | `device` | int index **or** string name-substring; omit for system default | • Which input mic<br>• Integer = device index; string = matches device name |
 
@@ -130,15 +137,15 @@ file; a bad type / range / enum makes startup fail loud (exit 1); an unknown key
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `max_record_s` | positive float (`>0`) | • Hard cap on one recording, in seconds<br>• Auto-stops so a forgotten session can't run forever |
-| `idle_timeout_s` | any number; `<= 0` disables | • Unload the model from VRAM after this many idle seconds<br>• `<=0` keeps it resident (faster next use, holds VRAM) |
+| `max_record_s` | positive float, `0 < x <= 86400` | • Hard cap on one recording, in seconds<br>• Auto-stops so a forgotten session can't run forever |
+| `idle_timeout_s` | any number `<= 86400`; `<= 0` disables | • Unload the model from VRAM after this many idle seconds<br>• `<=0` keeps it resident (faster next use, holds VRAM) — that's the way to say "never unload"; a huge number is refused |
 | `notify` | bool: `true` \| `false` | • Whether the daemon sends desktop notifications (recording start/stop, etc.) |
 
 **`[notify]`**
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `timeout_s` | positive float (`>0`) | • Backstop timeout on the `notify-send` subprocess call (so a hung notifier can't block)<br>• Not how long the popup is shown |
+| `timeout_s` | positive float, `0 < x <= 86400` | • Backstop timeout on the `notify-send` subprocess call (so a hung notifier can't block)<br>• Not how long the popup is shown |
 
 ## Hyprland trigger
 
@@ -183,6 +190,11 @@ Text is typed into the focused window with `wtype` (Wayland virtual-keyboard
 protocol; Hyprland-native, no uinput / root / `input` group). Empty or
 whitespace-only transcripts are a no-op.
 
+Injection never raises (a failed paste must not kill the daemon), but it does report:
+if `wtype` is missing, fails, or times out you get a `⚠ Not typed (wtype failed)`
+toast with the transcript in the body, so the text is still recoverable by hand
+instead of a `✓ Done` toast that quietly lied.
+
 If `wtype` misbehaves — very long paragraphs, or an app that drops fast synthetic
 keystrokes — the robust fallback is **clipboard + paste**:
 
@@ -214,8 +226,16 @@ prints a comparable WER + latency/RTF table.
 uv sync --extra bench                 # scoring + faster-whisper contenders
 uv run susurro-bench --list-models    # what's wired and installed
 uv run susurro-bench record           # read the scripts into bench/recordings/ (gitignored)
+uv run susurro-bench record --device 4   # capture from a specific input
 uv run susurro-bench run              # transcribe every recording with every model -> table
 ```
+
+`record` reads the same `[audio]` config the daemon does (`--config PATH` to relocate
+it, `--device` to override the input), so you benchmark the mic you actually dictate
+with. It requires `sample_rate = 16000`: nothing in the harness resamples, and a clip
+recorded at another rate would be transcribed as garbage at a bogus RTF. `run` skips
+any clip that isn't 16 kHz 16-bit PCM (or isn't a readable WAV at all) with a warning
+rather than scoring it; a multichannel clip is downmixed to its first channel.
 
 Full workflow, metric definitions, and the keep-or-switch results table live in
 [`bench/README.md`](bench/README.md).
@@ -248,7 +268,7 @@ config.toml       # repo-local tunables (optional, .gitignore'd; --config to rel
 bench/scripts/    # committed reference scripts; recordings/ + results/ gitignored
 tests/
   test_formatter.py  test_audio.py    test_daemon.py  test_ctl.py
-  test_inject.py     test_notify.py   test_config.py  test_main.py
+  test_inject.py     test_notify.py   test_config.py  test_engine_language.py
   test_cli.py        test_cuda.py     test_serve.py   test_lazy_engine.py
   test_engine.py     # skipped when no CUDA/model
   test_bench_registry.py  test_bench_transcriber.py  test_bench_cli.py

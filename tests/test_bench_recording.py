@@ -1,10 +1,13 @@
 """Unit tests for the hardware-free parts of `susurro-bench record`.
 
 The mic capture and the interactive prompts need a person and a device, but the
-two pieces of real logic are pure: the WAV writer (round-trips through `load_wav`,
-prior art `tests/test_audio.py`) and the planner that decides which scripts to
-record given what's already on disk and the flags.
+real logic is pure: the WAV writer (round-trips through `load_wav`, prior art
+`tests/test_audio.py`), the planner that decides which scripts to record given
+what's already on disk and the flags, and the `[audio]` resolution that decides
+*which input* gets captured (defaults < config file < CLI flag).
 """
+
+import argparse
 
 import numpy as np
 import pytest
@@ -12,10 +15,13 @@ import pytest
 from susurro.audio import SAMPLE_RATE, load_wav
 from susurro.bench.recording import (
     plan_recordings,
+    record_command,
     recorded_ids,
+    resolve_audio,
     save_wav,
     script_ids,
 )
+from susurro.config import ConfigError
 
 # --- save_wav (round-trip through load_wav) --------------------------------
 
@@ -99,3 +105,54 @@ def test_recorded_ids_are_wav_stems(tmp_path):
 
 def test_recorded_ids_missing_dir_is_empty(tmp_path):
     assert recorded_ids(tmp_path / "does-not-exist") == set()
+
+
+# --- [audio] resolution (defaults < config file < CLI flag) ----------------
+
+
+def _args(tmp_path, *, toml: str = "", device: str | None = None) -> argparse.Namespace:
+    """A `record` namespace pointed at a throwaway config file, so these tests never
+    read (or depend on) the repo's own config.toml."""
+    path = tmp_path / "config.toml"
+    path.write_text(toml)
+    return argparse.Namespace(config=str(path), device=device)
+
+
+def test_resolve_audio_uses_the_config_device_when_no_flag(tmp_path):
+    # The bug this closes: `record` used to ignore [audio] entirely and capture ten
+    # silent takes from the default input the owner had already configured around.
+    assert resolve_audio(_args(tmp_path, toml="[audio]\ndevice = 4\n")).device == 4
+
+
+def test_resolve_audio_device_flag_overrides_the_config(tmp_path):
+    aud = resolve_audio(_args(tmp_path, toml="[audio]\ndevice = 4\n", device="7"))
+    assert aud.device == 7  # digits -> PortAudio index, same rule as the other CLIs
+
+
+def test_resolve_audio_device_flag_accepts_a_name_substring(tmp_path):
+    aud = resolve_audio(_args(tmp_path, toml="[audio]\ndevice = 4\n", device="Yeti"))
+    assert aud.device == "Yeti"
+
+
+def test_resolve_audio_falls_back_to_built_in_defaults(tmp_path):
+    aud = resolve_audio(_args(tmp_path))  # config file present but empty
+    assert aud.device is None  # PortAudio's default input
+    assert aud.sample_rate == SAMPLE_RATE
+
+
+def test_resolve_audio_rejects_a_sample_rate_the_harness_cannot_benchmark(tmp_path):
+    # No backend resamples, so a non-16k rate is refused before `record` writes ten
+    # takes that `run` would only reject later. The check now lives in `config` (one
+    # gate for every entrypoint, daemon included); this pins that `record` inherits it.
+    with pytest.raises(ConfigError) as exc:
+        resolve_audio(_args(tmp_path, toml="[audio]\nsample_rate = 48000\n"))
+    assert "48000" in str(exc.value) and str(SAMPLE_RATE) in str(exc.value)
+
+
+def test_record_command_reports_a_config_error_before_prompting(capsys, tmp_path):
+    # The namespace deliberately carries only the flags resolve_audio needs: if the
+    # config check ever moves after the planner, this raises instead of blocking the
+    # suite on the interactive `input()`.
+    rc = record_command(_args(tmp_path, toml="[audio]\nsample_rate = 48000\n"))
+    assert rc == 1
+    assert "48000" in capsys.readouterr().err

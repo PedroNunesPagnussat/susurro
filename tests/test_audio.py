@@ -174,3 +174,63 @@ def test_load_wav_downmixes_multichannel_to_first_channel(tmp_path):
     assert out.ndim == 1
     assert out.shape == (3,)  # 3 frames, mono — not 6 interleaved samples
     np.testing.assert_allclose(out, [left / 32768.0] * 3, rtol=1e-6)  # left kept
+
+
+def _write_wav(path, rate: int) -> None:
+    """A silent 16-bit mono WAV at `rate` — just a header to load against."""
+    import wave
+
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(np.zeros(10, dtype=np.int16).tobytes())
+
+
+def test_load_wav_rejects_a_wav_at_another_sample_rate(tmp_path):
+    # Nothing here resamples, so a 48kHz take read as 16kHz would transcribe as
+    # garbage *and* be timed against 3x its real duration — both silently. The
+    # error has to name the file and both rates to be actionable.
+    path = tmp_path / "48k.wav"
+    _write_wav(path, 48_000)
+
+    with pytest.raises(ValueError) as exc:
+        load_wav(path)
+
+    message = str(exc.value)
+    assert "48000" in message and str(SAMPLE_RATE) in message
+    assert "48k.wav" in message
+
+
+def test_load_wav_names_the_file_on_a_truncated_data_chunk(tmp_path):
+    # Ctrl-C during `save_wav` leaves an odd number of bytes in the data chunk;
+    # numpy then raises "buffer size must be a multiple of element size" with no
+    # filename, and the bench turned that into a warning naming no recording.
+    path = tmp_path / "truncated.wav"
+    _write_wav(path, SAMPLE_RATE)
+    path.write_bytes(path.read_bytes()[:-1])  # chop one byte off the samples
+
+    with pytest.raises(ValueError) as exc:
+        load_wav(path)
+
+    message = str(exc.value)
+    assert "truncated.wav" in message  # which recording, the only actionable part
+    assert "multiple of element size" in message  # keeps numpy's own diagnosis
+
+
+def test_load_wav_names_the_file_on_a_channel_misaligned_chunk(tmp_path):
+    # Same class through the other raise: a stereo take whose frame count doesn't
+    # divide by the channel count blows up in `reshape`, also unnamed.
+    import wave
+
+    path = tmp_path / "misaligned.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(np.zeros(4, dtype=np.int16).tobytes())
+    # Drop one int16 so the sample count is odd against 2 channels.
+    path.write_bytes(path.read_bytes()[:-2])
+
+    with pytest.raises(ValueError, match="misaligned.wav"):
+        load_wav(path)
