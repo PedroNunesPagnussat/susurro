@@ -71,7 +71,7 @@ beam_size = 1
 vad_filter = false
 
 [audio]
-sample_rate = 48000
+sample_rate = 16000
 channels = 2
 device = "USB mic"
 
@@ -95,7 +95,7 @@ def test_full_file_maps_every_value(tmp_path):
         beam_size=1,
         vad_filter=False,
     )
-    assert cfg.audio.sample_rate == 48000
+    assert cfg.audio.sample_rate == 16000  # the only accepted rate (see below)
     assert cfg.audio.channels == 2
     assert cfg.audio.device == "USB mic"
     assert cfg.daemon.max_record_s == 90.0
@@ -205,16 +205,62 @@ def test_notify_timeout_rejects_non_finite(tmp_path, value):
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
 def test_idle_timeout_rejects_non_finite(tmp_path, value):
-    # `_number` accepts <=0 as the idle-unload-off sentinel, but not nan/inf.
+    # `_seconds` accepts <=0 as the idle-unload-off sentinel, but not nan/inf.
     p = _write(tmp_path / "c.toml", f"[daemon]\nidle_timeout_s = {value}\n")
     with pytest.raises(ConfigError, match="idle_timeout_s must be a finite number"):
         load_config(p)
 
 
-@pytest.mark.parametrize("value", ["0", "-1", "-0.5", "300.0", "1e6"])
-def test_idle_timeout_still_accepts_every_finite_value(tmp_path, value):
+@pytest.mark.parametrize("value", ["0", "-1", "-0.5", "300.0", "86400"])
+def test_idle_timeout_still_accepts_every_in_range_value(tmp_path, value):
     cfg = load_config(_write(tmp_path / "c.toml", f"[daemon]\nidle_timeout_s = {value}\n"))
     assert cfg.daemon.idle_timeout_s == float(value)
+
+
+# --- fail loud: huge-but-finite durations -----------------------------------
+#
+# The finiteness checks above are not enough: `settimeout()`/`sleep()` raise
+# OverflowError above ~9.2e9 seconds, so a *finite* `1e10` walks past every range
+# check and then kills the daemon on its first accept-loop iteration — after paying
+# the full model load. Realistic input: someone wanting "never unload" writes
+# `idle_timeout_s = 99999999999` instead of the documented `<= 0`.
+
+
+@pytest.mark.parametrize(
+    ("table", "key"),
+    [("daemon", "max_record_s"), ("daemon", "idle_timeout_s"), ("notify", "timeout_s")],
+)
+def test_durations_reject_huge_but_finite_values(tmp_path, table, key):
+    p = _write(tmp_path / "c.toml", f"[{table}]\n{key} = 1e10\n")
+    with pytest.raises(ConfigError, match=f"{key} must be at most 86400 seconds"):
+        load_config(p)
+
+
+def test_idle_timeout_over_the_cap_points_at_the_sentinel(tmp_path):
+    # The user's actual intent ("never unload") has a documented spelling; say so
+    # instead of only naming the bound.
+    p = _write(tmp_path / "c.toml", "[daemon]\nidle_timeout_s = 99999999999\n")
+    with pytest.raises(ConfigError, match="use <= 0 to disable"):
+        load_config(p)
+
+
+# --- fail loud: a capture rate Whisper can't use ----------------------------
+
+
+def test_sample_rate_must_be_16k(tmp_path):
+    # The bench refused a non-16k rate but the daemon accepted it and transcribed
+    # garbage forever, silently — the same class of bug the validators exist to kill.
+    p = _write(tmp_path / "c.toml", "[audio]\nsample_rate = 48000\n")
+    with pytest.raises(ConfigError, match="sample_rate must be 16000") as exc:
+        load_config(p)
+    assert "resamples" in str(exc.value)  # says *why*, not just what
+    assert "48000" in str(exc.value)
+
+
+def test_sample_rate_still_rejects_a_non_positive_int(tmp_path):
+    p = _write(tmp_path / "c.toml", "[audio]\nsample_rate = 0\n")
+    with pytest.raises(ConfigError, match="sample_rate must be a positive integer"):
+        load_config(p)
 
 
 def test_non_finite_error_names_the_offending_value(tmp_path):

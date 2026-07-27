@@ -41,8 +41,9 @@ def main(argv: list[str] | None = None) -> int:
     if len(argv) == 1 and argv[0] in {"start", "stop"}:
         return send(argv[0])
     if argv and argv[0] == "lang" and len(argv) <= 2:
-        # bare `lang` = toggle en<->pt; `lang <code>` sets it explicitly. The
-        # daemon owns code validation (unknown codes fall back to the raw code).
+        # bare `lang` = toggle en<->pt; `lang <code>` sets it explicitly. The daemon
+        # owns code validation: it rejects an unknown code, keeps the current
+        # language, and says so in a toast — so this stays a dumb pass-through.
         return send(f"lang {argv[1]}" if len(argv) == 2 else "lang toggle")
     print(_USAGE, file=sys.stderr)
     return 2

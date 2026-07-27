@@ -200,3 +200,37 @@ def test_load_wav_rejects_a_wav_at_another_sample_rate(tmp_path):
     message = str(exc.value)
     assert "48000" in message and str(SAMPLE_RATE) in message
     assert "48k.wav" in message
+
+
+def test_load_wav_names_the_file_on_a_truncated_data_chunk(tmp_path):
+    # Ctrl-C during `save_wav` leaves an odd number of bytes in the data chunk;
+    # numpy then raises "buffer size must be a multiple of element size" with no
+    # filename, and the bench turned that into a warning naming no recording.
+    path = tmp_path / "truncated.wav"
+    _write_wav(path, SAMPLE_RATE)
+    path.write_bytes(path.read_bytes()[:-1])  # chop one byte off the samples
+
+    with pytest.raises(ValueError) as exc:
+        load_wav(path)
+
+    message = str(exc.value)
+    assert "truncated.wav" in message  # which recording, the only actionable part
+    assert "multiple of element size" in message  # keeps numpy's own diagnosis
+
+
+def test_load_wav_names_the_file_on_a_channel_misaligned_chunk(tmp_path):
+    # Same class through the other raise: a stereo take whose frame count doesn't
+    # divide by the channel count blows up in `reshape`, also unnamed.
+    import wave
+
+    path = tmp_path / "misaligned.wav"
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(SAMPLE_RATE)
+        w.writeframes(np.zeros(4, dtype=np.int16).tobytes())
+    # Drop one int16 so the sample count is odd against 2 channels.
+    path.write_bytes(path.read_bytes()[:-2])
+
+    with pytest.raises(ValueError, match="misaligned.wav"):
+        load_wav(path)

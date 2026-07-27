@@ -81,15 +81,11 @@ def resolve_audio(args: argparse.Namespace) -> AudioConfig:
     layered on top (built-in defaults < config file < CLI flag — the same precedence
     `susurro` and `susurro-daemon` use).
 
-    Raises `ConfigError` on a bad config *and* on a rate the harness can't benchmark:
-    every backend is promised 16kHz mono and nothing resamples, so a non-16k rate is
-    refused here, before ten scripts get read into files `run` would only reject."""
+    Raises `ConfigError` on a bad config, which includes the rate this harness needs:
+    every backend is promised 16kHz mono and nothing resamples, and `config` refuses
+    any other `[audio] sample_rate` outright — so `record` can't write ten takes that
+    `run` would only reject later, without a second check here that could drift."""
     config = load_config(args.config)
-    if config.audio.sample_rate != SAMPLE_RATE:
-        raise ConfigError(
-            f"[audio] sample_rate is {config.audio.sample_rate} Hz, but the benchmark "
-            f"requires {SAMPLE_RATE} Hz (no backend resamples)"
-        )
     # `--device` is a raw string from argparse (see cli.py) — parse it with the same
     # rule the other CLIs use: digits are a PortAudio index, anything else a name.
     flag = parse_device(args.device) if args.device is not None else None

@@ -141,8 +141,9 @@ def test_resolve_audio_falls_back_to_built_in_defaults(tmp_path):
 
 
 def test_resolve_audio_rejects_a_sample_rate_the_harness_cannot_benchmark(tmp_path):
-    # 48kHz is a legal daemon setting but unbenchmarkable: no backend resamples, so
-    # refuse up front instead of writing takes that `run` would only reject later.
+    # No backend resamples, so a non-16k rate is refused before `record` writes ten
+    # takes that `run` would only reject later. The check now lives in `config` (one
+    # gate for every entrypoint, daemon included); this pins that `record` inherits it.
     with pytest.raises(ConfigError) as exc:
         resolve_audio(_args(tmp_path, toml="[audio]\nsample_rate = 48000\n"))
     assert "48000" in str(exc.value) and str(SAMPLE_RATE) in str(exc.value)

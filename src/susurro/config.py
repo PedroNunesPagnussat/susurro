@@ -6,8 +6,9 @@ mirroring the TOML tables); each CLI then lets flags override the loaded values
 (defaults < config file < CLI flag).
 
 Fail-loud by design: a malformed file or an invalid value (wrong type, out of
-range, non-finite, bad enum) raises `ConfigError` rather than silently running on
-a default, so a typo in the config is caught at startup instead of surprising you later.
+range, non-finite, over `MAX_SECONDS`, a capture rate Whisper can't use, bad enum)
+raises `ConfigError` rather than silently running on a default, so a typo in the
+config is caught at startup instead of surprising you later.
 Unknown keys/tables only warn (forward-compatible with older configs). A missing
 default file is fine (all defaults); a missing *explicitly requested* file errors.
 """
@@ -30,6 +31,14 @@ from .engine import DEFAULT_MODEL
 from .notify import DEFAULT_TIMEOUT_S
 
 DEFAULT_MAX_RECORD_S = 60.0
+
+# Upper bound on every seconds-valued knob (config *and* CLI flag — `_cli` imports it).
+# Not a taste limit: `socket.settimeout()` and `time.sleep()` raise `OverflowError`
+# above ~9.2e9 seconds, so a huge-but-finite value walks past the finiteness checks
+# and kills the daemon on its first accept-loop iteration — right after paying the
+# full model load. A day is far past any plausible setting, and "never idle-unload"
+# has its own `<= 0` sentinel, so nothing legitimate is above this.
+MAX_SECONDS = 86_400.0
 
 
 class ConfigError(Exception):
@@ -153,23 +162,43 @@ def _finite(v: int | float) -> bool:
         return False
 
 
-def _pos_float(v: object) -> float:
+def _pos_seconds(v: object) -> float:
+    """A duration in seconds, > 0 and at most `MAX_SECONDS`."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise _Invalid("must be a positive number")
     if not _finite(v):
         raise _Invalid("must be a finite positive number")
     if v <= 0:
         raise _Invalid("must be a positive number")
+    if v > MAX_SECONDS:
+        raise _Invalid(f"must be at most {MAX_SECONDS:.0f} seconds")
     return float(v)
 
 
-def _number(v: object) -> float:
-    # Any real number: used where <=0 is a meaningful sentinel (idle-unload off).
+def _seconds(v: object) -> float:
+    """A duration in seconds where `<= 0` is a meaningful sentinel (idle-unload off),
+    capped at `MAX_SECONDS` like every other duration."""
     if isinstance(v, bool) or not isinstance(v, (int, float)):
         raise _Invalid("must be a number")
     if not _finite(v):
         raise _Invalid("must be a finite number")
+    if v > MAX_SECONDS:
+        raise _Invalid(f"must be at most {MAX_SECONDS:.0f} seconds (use <= 0 to disable)")
     return float(v)
+
+
+def _capture_rate(v: object) -> int:
+    """The capture rate is not a free knob: Whisper is trained at `SAMPLE_RATE` and
+    nothing in this repo resamples, so another rate reaches the model as-is and
+    transcribes as garbage — silently, forever. Refused here, the one gate every
+    entrypoint (daemon, mic test, bench) passes through."""
+    rate = _pos_int(v)
+    if rate != SAMPLE_RATE:
+        raise _Invalid(
+            f"must be {SAMPLE_RATE} — Whisper is trained at that rate and nothing "
+            "here resamples, so another rate transcribes as garbage"
+        )
+    return rate
 
 
 def _input_device(v: object) -> int | str:
@@ -195,17 +224,17 @@ _SCHEMA: dict[str, dict[str, Callable[[object], object]]] = {
         "vad_filter": _bool,
     },
     "audio": {
-        "sample_rate": _pos_int,
+        "sample_rate": _capture_rate,
         "channels": _pos_int,
         "device": _input_device,
     },
     "daemon": {
-        "max_record_s": _pos_float,
-        "idle_timeout_s": _number,
+        "max_record_s": _pos_seconds,
+        "idle_timeout_s": _seconds,
         "notify": _bool,
     },
     "notify": {
-        "timeout_s": _pos_float,
+        "timeout_s": _pos_seconds,
     },
 }
 
@@ -218,6 +247,8 @@ _SECTIONS = {
 
 
 def _warn(msg: str) -> None:
+    # Same one-line shape as `_cli.log`, duplicated on purpose: `_cli` imports this
+    # module, so importing back would be a cycle. Keep the two in step by eye.
     print(f"susurro: {msg}", file=sys.stderr, flush=True)
 
 

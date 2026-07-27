@@ -32,27 +32,26 @@ import numpy as np
 from ._cli import (
     add_common_flags,
     apply_engine_audio,
-    build_engine,
-    finite_float,
-    load_engine,
-    positive_float,
+    positive_seconds,
     preflight_language,
+    seconds,
+    start_engine,
 )
+
+# Shared with the mic test so both entrypoints shape their `susurro: …` stderr lines
+# identically; also `Daemon`'s default `log`, which stays injectable (tests silence
+# it with `log=lambda _msg: None`).
 from ._cli import log as _log
 from ._ipc import socket_path
 from .audio import Recorder
-from .config import DEFAULT_MAX_RECORD_S, Config, ConfigError, load_config, pick
-from .engine import LazyEngine, is_supported_language
+from .config import DEFAULT_MAX_RECORD_S, MAX_SECONDS, Config, ConfigError, load_config, pick
+from .engine import is_supported_language
 from .inject import inject
 from .notify import Notifier, NullNotifier
 
 # A connected client that never sends is dropped after this long so it can't wedge
 # the single-threaded accept loop (the real `susurro-ctl` sends then closes at once).
 _CLIENT_RECV_TIMEOUT_S = 1.0
-
-# `_log` (`_cli.log`) is shared with the mic test so both entrypoints shape their
-# `susurro: …` stderr lines identically. It is also `Daemon`'s default `log`, which
-# the class keeps injectable (tests silence it with `log=lambda _msg: None`).
 
 
 class _Capturer(Protocol):
@@ -316,9 +315,14 @@ def _serve_once(srv: socket.socket, daemon: Daemon) -> None:
     # Wake on the nearest of two deadlines: the recording auto-stop and the
     # idle-unload. Either may be None (not armed); None -> block until a command.
     # Floor a tiny positive value so accept() stays in timeout mode (0.0 would flip
-    # the socket to non-blocking and busy-spin).
+    # the socket to non-blocking and busy-spin), and cap it at MAX_SECONDS because
+    # `settimeout()` raises OverflowError above ~9.2e9 — that call sits outside the
+    # try below, so it would escape `serve()` and kill the daemon outright. Config
+    # and flags are already capped at input; this is the backstop that makes the
+    # crash structurally impossible. Waking early is free: both checks are no-ops
+    # before their deadline.
     deadlines = [d for d in (daemon.remaining(), daemon.idle_remaining()) if d is not None]
-    srv.settimeout(None if not deadlines else max(min(deadlines), 0.05))
+    srv.settimeout(None if not deadlines else min(max(min(deadlines), 0.05), MAX_SECONDS))
     try:
         conn, _ = srv.accept()
     except TimeoutError:
@@ -381,20 +385,20 @@ def serve(daemon: Daemon, sock_path: str | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     # Shared engine/audio flags come from `add_common_flags`; the rest are daemon-only.
-    # `--max-record` takes `positive_float` so a flag can't set a cap the config file
+    # `--max-record` takes `positive_seconds` so a flag can't set a cap the config file
     # would have rejected. `--idle-timeout` can't: `<= 0` is its "stay resident"
-    # sentinel, so it takes `finite_float` — non-positive legal, `nan`/`inf` not.
+    # sentinel, so it takes `seconds` — non-positive legal, `nan`/`inf`/huge not.
     p = argparse.ArgumentParser(prog="susurro-daemon", description=__doc__)
     add_common_flags(p)
     p.add_argument(
         "--max-record",
-        type=positive_float,
+        type=positive_seconds,
         default=None,
         help="safety auto-stop after this many seconds",
     )
     p.add_argument(
         "--idle-timeout",
-        type=finite_float,
+        type=seconds,
         default=None,
         help="unload the model to free VRAM after this many idle seconds (<=0 disables)",
     )
@@ -437,13 +441,9 @@ def main(argv: list[str] | None = None) -> int:
     idle_timeout = dae.idle_timeout_s if dae.idle_timeout_s > 0 else None
 
     print(f"susurro daemon: loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
-    # LazyEngine so an idle daemon can drop the model and free VRAM, reloading via
-    # this factory on the next utterance; after the warmup the reload is lazy.
-    engine = load_engine(
-        eng,
-        lambda: LazyEngine(lambda: build_engine(eng), language=eng.language),
-        sample_rate=aud.sample_rate,
-    )
+    # `lazy=True`: a LazyEngine so an idle daemon can drop the model and free VRAM,
+    # rebuilding on the next utterance; after this warmup the reload is lazy.
+    engine = start_engine(eng, sample_rate=aud.sample_rate, lazy=True)
     if engine is None:
         return 1
 

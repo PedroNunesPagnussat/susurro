@@ -158,7 +158,7 @@ def load_wav(path: str | Path) -> np.ndarray:
         framerate = w.getframerate()
         frames = w.readframes(w.getnframes())
 
-    # Both messages name the file: the bench runner turns them into per-clip
+    # Every message here names the file: the bench runner turns them into per-clip
     # warnings, where "which recording?" is the only actionable part.
     if sampwidth != 2:
         raise ValueError(f"{path}: expected 16-bit PCM WAV, got sampwidth={sampwidth}")
@@ -168,7 +168,14 @@ def load_wav(path: str | Path) -> np.ndarray:
             "(nothing here resamples — re-record it at the expected rate)"
         )
 
-    data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
-    if n_channels > 1:
-        data = data.reshape(-1, n_channels)[:, 0]
+    try:
+        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+        if n_channels > 1:
+            data = data.reshape(-1, n_channels)[:, 0]
+    except ValueError as exc:
+        # A truncated data chunk (Ctrl-C during `save_wav`) or one that doesn't
+        # divide by the channel count: numpy's message ("buffer size must be a
+        # multiple of element size") carries no filename, so wrap it with one —
+        # otherwise the bench warning names no recording and the user can't act.
+        raise ValueError(f"{path}: malformed PCM data ({exc})") from exc
     return data

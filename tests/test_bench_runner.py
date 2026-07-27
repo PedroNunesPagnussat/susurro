@@ -146,6 +146,27 @@ def test_discover_skips_a_recording_that_is_not_a_readable_wav(tmp_path, label, 
     assert "skipped" in warn_text
 
 
+def test_discover_names_the_file_on_a_half_written_take(tmp_path):
+    # The other Ctrl-C shape: a header claiming more samples than the data chunk
+    # holds. numpy's "buffer size must be a multiple of element size" carries no
+    # filename, so this warning used to name no recording at all — unactionable
+    # across a ten-script eval set.
+    scripts = tmp_path / "scripts"
+    recs = tmp_path / "recordings"
+    scripts.mkdir()
+    recs.mkdir()
+    (scripts / "a.txt").write_text("alpha reference")
+    (scripts / "b.txt").write_text("bravo reference")
+    save_wav(recs / "a.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    save_wav(recs / "b.wav", np.zeros(SAMPLE_RATE, dtype=np.float32))
+    (recs / "b.wav").write_bytes((recs / "b.wav").read_bytes()[:-1])  # chop a byte
+
+    clips, warnings = discover_clips(scripts, recs)  # must not raise
+
+    assert [c.id for c in clips] == ["a"]
+    assert "b.wav" in " ".join(warnings)
+
+
 # --- measurement: warm-up + median-of-N + RTF ------------------------------
 
 

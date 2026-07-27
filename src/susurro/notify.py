@@ -32,18 +32,39 @@ DEFAULT_TIMEOUT_S = 5.0
 _LANG_NAMES = {"en": "English", "pt": "Português"}
 
 
-def _send(*args: str, timeout: float = DEFAULT_TIMEOUT_S) -> None:
+def _send(
+    summary: str,
+    body: str | None = None,
+    *,
+    expire_ms: int,
+    urgency: str,
+    timeout: float = DEFAULT_TIMEOUT_S,
+) -> None:
     """Fire notify-send, swallowing every failure onto stderr. A missing binary,
-    a non-zero return, or a hung spawn must never reach the daemon loop."""
+    a non-zero return, or a hung spawn must never reach the daemon loop.
+
+    Summary and body go after `--` because the body is *user text*: GLib's option
+    parser reads a leading `-` as an unknown option and exits 1 without posting
+    anything (`notify-send … "✓ Done" "-5 degrees"` -> `Unknown option -5 degrees`).
+    Whisper emits dialogue dashes routinely in pt, so that is a real transcript,
+    and a toast that never posts also never *replaces* the persistent `-t 0`
+    recording one — it would hang on screen forever (same reason `inject.py` does it).
+
+    A non-zero return is logged rather than ignored: it means the toast the daemon
+    believes it posted isn't on screen."""
+    args = ["notify-send", "-a", _APP, "-h", _SYNC_HINT, "-t", str(expire_ms), "-u", urgency]
+    args += ["--", summary] if body is None else ["--", summary, body]
     try:
-        subprocess.run(
-            ["notify-send", "-a", _APP, "-h", _SYNC_HINT, *args],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
+        proc = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
     except (OSError, subprocess.SubprocessError) as exc:
         print(f"susurro: notify-send failed: {exc}", file=sys.stderr, flush=True)
+        return
+    if proc.returncode != 0:
+        print(
+            f"susurro: notify-send failed (rc={proc.returncode}): {proc.stderr.strip()}",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 class Notifier:
@@ -60,7 +81,7 @@ class Notifier:
         # -t 0 = never expire: it stays up for the whole hold as the armed
         # indicator, until `done()` replaces it via the shared sync hint. Shows
         # the active language so you can see what it'll transcribe as.
-        _send("-t", "0", "-u", "low", f"🎙 Recording ({language})…", timeout=self._timeout_s)
+        _send(f"🎙 Recording ({language})…", expire_ms=0, urgency="low", timeout=self._timeout_s)
 
     def done(self, text: str, *, injected: bool = True) -> None:
         # Replaces the persistent toast and fades on its own. Called on *every*
@@ -70,16 +91,14 @@ class Notifier:
             # wtype couldn't type it. Longer dwell so it's noticed, and the transcript
             # stays in the body so the words aren't simply lost.
             _send(
-                "-t",
-                "8000",
-                "-u",
-                "normal",
                 "⚠ Not typed (wtype failed)",
                 body,
+                expire_ms=8000,
+                urgency="normal",
                 timeout=self._timeout_s,
             )
             return
-        _send("-t", "4000", "-u", "low", "✓ Done", body, timeout=self._timeout_s)
+        _send("✓ Done", body, expire_ms=4000, urgency="low", timeout=self._timeout_s)
 
     def language(self, code: str, *, supported: bool = True) -> None:
         # Transient confirmation of a live language switch. Shares the sync slot,
@@ -88,21 +107,17 @@ class Notifier:
             # Refused, so nothing changed. Name the code: the alternative was a
             # confirming toast, then every later utterance silently failing.
             _send(
-                "-t",
-                "5000",
-                "-u",
-                "normal",
                 f'⚠ Susurro: unknown language "{code}" — unchanged',
+                expire_ms=5000,
+                urgency="normal",
                 timeout=self._timeout_s,
             )
             return
         name = _LANG_NAMES.get(code, code)
         _send(
-            "-t",
-            "2000",
-            "-u",
-            "low",
             f"🌐 Susurro: Transcribing to {name}",
+            expire_ms=2000,
+            urgency="low",
             timeout=self._timeout_s,
         )
 

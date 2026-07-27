@@ -1,10 +1,15 @@
 """Shared CLI plumbing for the two entrypoints (`susurro-daemon`, `susurro`).
 
-Both CLIs parse the same engine/audio flags, layer them over the loaded config the
-same way, and start the model the same way; this is the one place that logic lives
-so adding an engine knob is a single edit, not shotgun surgery across both `main`s.
-The daemon adds its own `--max-record`/`--idle-timeout`/`--no-notify` on top; the
-mic test adds `--duration`/`--list-devices`.
+Both CLIs parse the same engine/audio flags and layer them over the loaded config
+the same way; this is the one place that logic lives, so adding a flag is a single
+edit, not shotgun surgery across both `main`s. The daemon adds its own
+`--max-record`/`--idle-timeout`/`--no-notify` on top; the mic test adds
+`--duration`/`--list-devices`.
+
+Deliberately *not* here: how a config becomes an engine. That lives in `engine.py`
+(`build_engine`/`load_engine`) so an engine change doesn't touch the CLI module;
+`start_engine` below is only the presentation half — turning the failure into the
+same `susurro: …` line every other startup error uses.
 """
 
 from __future__ import annotations
@@ -12,21 +17,19 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from collections.abc import Callable
 from dataclasses import replace
 
-import numpy as np
-
-from .config import Config, EngineConfig, pick
-from .engine import Engine, is_supported_language
+from .config import MAX_SECONDS, Config, EngineConfig, pick
+from .engine import Engine, EngineLoadError, LazyEngine, is_supported_language, load_engine
 
 
 def log(msg: str) -> None:
-    """Write one `susurro: …` line to stderr — the single place both entrypoints
-    shape their output, so a config error, a rejected language, a failed model load
-    and the daemon's loop warnings all read the same. Flushed: the daemon is started
-    from Hyprland's `exec-once`, where stderr is a pipe, and a buffered tail would be
-    lost exactly when something went wrong."""
+    """Write one `susurro: …` line to stderr — where both entrypoints shape their
+    output, so a config error, a rejected language, a failed model load and the
+    daemon's loop warnings all read the same. (`config._warn` is the one forced
+    duplicate: `_cli` imports `config`, so `config` can't import back.) Flushed: the
+    daemon is started from Hyprland's `exec-once`, where stderr is a pipe, and a
+    buffered tail would be lost exactly when something went wrong."""
     print(f"susurro: {msg}", file=sys.stderr, flush=True)
 
 
@@ -35,24 +38,29 @@ def parse_device(value: str) -> int | str:
     return int(value) if value.isdigit() else value
 
 
-def finite_float(value: str) -> float:
-    """An argparse type that rejects `nan`/`inf` but accepts any finite value, sign
-    included. For flags where a non-positive value is meaningful (`--idle-timeout 0`
-    disables idle-unload, so `positive_float` would be wrong) but a non-finite one
-    never is: it survives every range check, then reaches the daemon's accept-loop
-    `settimeout()`, which raises `OverflowError` on a non-finite timeout."""
+def seconds(value: str) -> float:
+    """An argparse duration: any finite value up to `MAX_SECONDS`, sign included.
+
+    For flags where a non-positive value is meaningful (`--idle-timeout 0` disables
+    idle-unload, so `positive_seconds` would be wrong) but an unusable magnitude
+    never is. Both ends of the range matter: `nan`/`inf` survive every `<= 0` check,
+    and a huge-but-finite value like `1e10` survives a finiteness check — either one
+    then reaches `settimeout()`/`sleep()`, which raise `OverflowError` and take the
+    process down (see `config.MAX_SECONDS`)."""
     parsed = float(value)
     if not math.isfinite(parsed):
         raise argparse.ArgumentTypeError(f"must be a finite number (got {value})")
+    if parsed > MAX_SECONDS:
+        raise argparse.ArgumentTypeError(f"must be at most {MAX_SECONDS:.0f} seconds (got {value})")
     return parsed
 
 
-def positive_float(value: str) -> float:
-    """An argparse type that rejects non-positive and non-finite values, so a flag
-    can't smuggle past the config's fail-loud validation (e.g. `--max-record 0` would
-    make every recording auto-stop instantly). `nan`/`inf` need their own check: every
-    `<= 0` comparison against them is False, and `float("1e400")` is already `inf`."""
-    parsed = finite_float(value)
+def positive_seconds(value: str) -> float:
+    """An argparse duration that must also be > 0, so a flag can't smuggle past the
+    config's fail-loud validation (e.g. `--max-record 0` would make every recording
+    auto-stop instantly). `float("1e400")` is already `inf`, so the range checks in
+    `seconds` do the rest."""
+    parsed = seconds(value)
     if parsed <= 0:
         raise argparse.ArgumentTypeError(f"must be > 0 (got {value})")
     return parsed
@@ -104,34 +112,17 @@ def preflight_language(code: str) -> bool:
     return False
 
 
-def build_engine(cfg: EngineConfig) -> Engine:
-    """`Engine` from the resolved `[engine]` config — the one place those fields map
-    onto the constructor, so a new knob is a single edit."""
-    return Engine(
-        cfg.model,
-        device=cfg.device,
-        compute_type=cfg.compute_type,
-        language=cfg.language,
-        beam_size=cfg.beam_size,
-        vad_filter=cfg.vad_filter,
-    )
+def start_engine(
+    cfg: EngineConfig, *, sample_rate: int, lazy: bool = False
+) -> Engine | LazyEngine | None:
+    """`engine.load_engine`, with the failure reported as a `susurro: …` line + None.
 
-
-def load_engine[E](cfg: EngineConfig, build: Callable[[], E], *, sample_rate: int) -> E | None:
-    """Build the engine and warm it, or report the failure and return None.
-
-    `build` absorbs the entrypoints' one difference (the mic test wants an `Engine`,
-    the daemon a `LazyEngine` around one). The warmup is where a bad model name,
-    failed download or broken CUDA install surfaces — a `LazyEngine` defers the load
-    until the first transcribe — and it leaves the kernels compiled, so the first
-    real utterance already hits warm timing. `E` needs only a `transcribe`."""
+    The split is deliberate: building/warming a model is `engine.py`'s job, shaping
+    a startup failure for a terminal is this module's. Reported like a config error
+    (same line, same exit 1) instead of dumping a stack trace into a log nobody reads
+    — under `exec-once` that traceback goes nowhere."""
     try:
-        engine = build()
-        engine.transcribe(np.zeros(sample_rate // 2, dtype=np.float32))
-    except Exception as exc:  # noqa: BLE001 (a startup failure gets a message, not a traceback)
-        # Report it like a config error (same `susurro: …` + exit 1) instead of
-        # dumping a stack trace into a log nobody reads. Name the model and the
-        # device — they're the knobs.
-        log(f"failed to load model {cfg.model!r} on {cfg.device}: {exc}")
+        return load_engine(cfg, sample_rate=sample_rate, lazy=lazy)
+    except EngineLoadError as exc:
+        log(str(exc))
         return None
-    return engine

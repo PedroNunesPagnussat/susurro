@@ -21,11 +21,10 @@ import numpy as np
 from ._cli import (
     add_common_flags,
     apply_engine_audio,
-    build_engine,
-    load_engine,
     log,
-    positive_float,
+    positive_seconds,
     preflight_language,
+    start_engine,
 )
 from .audio import Recorder, list_input_devices
 from .config import ConfigError, load_config
@@ -36,7 +35,9 @@ def _build_parser() -> argparse.ArgumentParser:
     # flags (defaults < config file < CLI flag).
     p = argparse.ArgumentParser(prog="susurro", description=__doc__)
     add_common_flags(p)
-    p.add_argument("--duration", type=positive_float, default=3.0, help="window length in seconds")
+    p.add_argument(
+        "--duration", type=positive_seconds, default=3.0, help="window length in seconds"
+    )
     p.add_argument("--list-devices", action="store_true", help="list input devices and exit")
     return p
 
@@ -68,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"loading {eng.model} on {eng.device} ({eng.language}) ...", flush=True)
-    engine = load_engine(eng, lambda: build_engine(eng), sample_rate=aud.sample_rate)
+    engine = start_engine(eng, sample_rate=aud.sample_rate)
     if engine is None:
         return 1
 

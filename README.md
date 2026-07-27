@@ -129,7 +129,7 @@ file; a bad type / range / enum makes startup fail loud (exit 1); an unknown key
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `sample_rate` | positive int | • Capture rate in Hz<br>• **Keep `16000`** — Whisper is trained on 16 kHz and *nothing here resamples*, so another rate is fed to the model as-is and transcribes as garbage |
+| `sample_rate` | must be `16000` (validated) | • Capture rate in Hz<br>• Whisper is trained on 16 kHz and *nothing here resamples*, so any other rate would reach the model as-is and transcribe as garbage — it's refused at startup rather than run silently wrong |
 | `channels` | positive int | • `1` = mono (what you want for speech) |
 | `device` | int index **or** string name-substring; omit for system default | • Which input mic<br>• Integer = device index; string = matches device name |
 
@@ -137,15 +137,15 @@ file; a bad type / range / enum makes startup fail loud (exit 1); an unknown key
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `max_record_s` | positive float (`>0`) | • Hard cap on one recording, in seconds<br>• Auto-stops so a forgotten session can't run forever |
-| `idle_timeout_s` | any number; `<= 0` disables | • Unload the model from VRAM after this many idle seconds<br>• `<=0` keeps it resident (faster next use, holds VRAM) |
+| `max_record_s` | positive float, `0 < x <= 86400` | • Hard cap on one recording, in seconds<br>• Auto-stops so a forgotten session can't run forever |
+| `idle_timeout_s` | any number `<= 86400`; `<= 0` disables | • Unload the model from VRAM after this many idle seconds<br>• `<=0` keeps it resident (faster next use, holds VRAM) — that's the way to say "never unload"; a huge number is refused |
 | `notify` | bool: `true` \| `false` | • Whether the daemon sends desktop notifications (recording start/stop, etc.) |
 
 **`[notify]`**
 
 | Key | Allowed | What it does |
 |---|---|---|
-| `timeout_s` | positive float (`>0`) | • Backstop timeout on the `notify-send` subprocess call (so a hung notifier can't block)<br>• Not how long the popup is shown |
+| `timeout_s` | positive float, `0 < x <= 86400` | • Backstop timeout on the `notify-send` subprocess call (so a hung notifier can't block)<br>• Not how long the popup is shown |
 
 ## Hyprland trigger
 
